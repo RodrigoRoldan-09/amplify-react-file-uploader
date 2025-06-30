@@ -1,13 +1,13 @@
-
 // components/UploadScreen.tsx
 import { useState } from "react";
 
 interface UploadScreenProps {
   onVideoUpload: (file: File, language: string, quality: string) => void;
   onExportOptions: () => void;
+  onVideoManager: () => void;
 }
 
-const UploadScreen: React.FC<UploadScreenProps> = ({ onVideoUpload, onExportOptions }) => {
+const UploadScreen: React.FC<UploadScreenProps> = ({ onVideoUpload, onExportOptions, onVideoManager }) => {
   const [language, setLanguage] = useState('english');
   const [quality, setQuality] = useState('high');
 
@@ -44,9 +44,8 @@ const UploadScreen: React.FC<UploadScreenProps> = ({ onVideoUpload, onExportOpti
           <h1 className="logo">🎬 File Uploader</h1>
         </div>
         <div className="header-right">
-          <button className="header-btn">Log Out</button>
           <button className="header-btn primary" onClick={handleFileSelect}>Upload</button>
-          <button className="header-btn">Transcription Editor</button>
+          <button className="header-btn" onClick={onVideoManager}>Upload Videos</button>
           <button className="header-btn" onClick={onExportOptions}>Export Options</button>
         </div>
       </header>

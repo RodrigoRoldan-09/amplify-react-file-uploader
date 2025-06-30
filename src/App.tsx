@@ -3,6 +3,8 @@ import { useState } from "react";
 import UploadScreen from "./components/UploadScreen";
 import VideoViewer from "./components/VideoViewer";
 import ExportOptions from "./components/ExportOptions";
+import VideoManager from "./components/VideoManager";
+import type { VideoItem } from "./components/VideoManager";
 import "./App.css";
 
 export type VideoData = {
@@ -20,7 +22,7 @@ export type ExportSettings = {
 };
 
 function App() {
-  const [currentScreen, setCurrentScreen] = useState<'upload' | 'viewer' | 'export'>('upload');
+  const [currentScreen, setCurrentScreen] = useState<'upload' | 'viewer' | 'export' | 'manager'>('upload');
   const [videoData, setVideoData] = useState<VideoData>({
     file: null,
     url: '',
@@ -83,12 +85,33 @@ Timestamps are automatically generated to sync with the video playback.`;
     URL.revokeObjectURL(url);
   };
 
+  const handleVideoManager = () => {
+    setCurrentScreen('manager');
+  };
+
+  const handleViewVideoFromManager = (video: VideoItem) => {
+    // Convert VideoItem to VideoData format
+    setVideoData({
+      file: null, // We don't have the original file in manager
+      url: video.s3Url,
+      language: video.language,
+      quality: video.quality,
+      transcription: `Transcription for "${video.title}"\n\n${video.description}\n\nThis is a demo transcription that would normally be generated from the actual video content. The transcription would include timestamps and formatted text based on the audio analysis.`
+    });
+    setCurrentScreen('viewer');
+  };
+
+  const handleUploadFromManager = () => {
+    setCurrentScreen('upload');
+  };
+
   return (
     <div className="app">
       {currentScreen === 'upload' && (
         <UploadScreen 
           onVideoUpload={handleVideoUpload}
           onExportOptions={handleExportOptions}
+          onVideoManager={handleVideoManager}
         />
       )}
       {currentScreen === 'viewer' && (
@@ -104,6 +127,13 @@ Timestamps are automatically generated to sync with the video playback.`;
           settings={exportSettings}
           onSettingsChange={setExportSettings}
           onSave={handleSaveSettings}
+        />
+      )}
+      {currentScreen === 'manager' && (
+        <VideoManager 
+          onBack={handleBack}
+          onViewVideo={handleViewVideoFromManager}
+          onUploadNew={handleUploadFromManager}
         />
       )}
     </div>
