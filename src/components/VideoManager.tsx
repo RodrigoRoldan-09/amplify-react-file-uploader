@@ -1,5 +1,27 @@
-// components/VideoManager.tsx - 5 VIDEOS PER PAGE
-import { useState } from "react";
+// components/VideoManager.tsx - FIXED HOOKS & TYPES
+import { useState, useEffect, useCallback } from "react";
+import { generateClient } from "aws-amplify/data";
+import { getUrl, remove } from "aws-amplify/storage";
+import type { Schema } from "../amplify/data/resource";
+
+const client = generateClient<Schema>();
+
+// Define proper type for database video record
+type DatabaseVideo = {
+  id: string;
+  title?: string | null;
+  description?: string | null;
+  s3Key: string;
+  s3Url?: string | null;
+  language?: string | null;
+  quality?: string | null;
+  transcription?: string | null;
+  duration?: number | null;
+  fileSize?: number | null;
+  mimeType?: string | null;
+  uploadedAt?: string | null;
+  status?: string | null;
+};
 
 export interface VideoItem {
   id: string;
@@ -13,6 +35,7 @@ export interface VideoItem {
   fileSize: string;
   uploadedAt: string;
   thumbnail: string;
+  status?: string;
 }
 
 interface VideoManagerProps {
@@ -30,7 +53,10 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedVideos, setSelectedVideos] = useState<string[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
-  const videosPerPage = 5; // CHANGED FROM 12 TO 5
+  const [videos, setVideos] = useState<VideoItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const videosPerPage = 5;
 
   const languages = [
     { value: 'english', label: 'English' },
@@ -45,179 +71,115 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
     { value: 'arabic', label: 'Arabic' }
   ];
 
-  // Demo videos data - easily removable later
-  const [videos, setVideos] = useState<VideoItem[]>([
-    {
-      id: "1",
-      title: "Marketing Presentation Q1 2024",
-      description: "Quarterly marketing results and strategy overview",
-      s3Key: "videos/marketing-q1-2024.mp4",
-      s3Url: "https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_1mb.mp4",
-      language: "english",
-      quality: "high",
-      duration: "12:34",
-      fileSize: "45.2 MB",
-      uploadedAt: "2024-01-15",
-      thumbnail: "https://via.placeholder.com/200x120/8B5CF6/ffffff?text=Marketing+Q1"
-    },
-    {
-      id: "2", 
-      title: "Product Demo - New Features",
-      description: "Demonstration of latest product capabilities",
-      s3Key: "videos/product-demo-2024.mp4",
-      s3Url: "https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_2mb.mp4",
-      language: "english",
-      quality: "high",
-      duration: "8:45",
-      fileSize: "32.1 MB",
-      uploadedAt: "2024-01-20",
-      thumbnail: "https://via.placeholder.com/200x120/A855F7/ffffff?text=Product+Demo"
-    },
-    {
-      id: "3",
-      title: "Team Meeting - Project Alpha",
-      description: "Weekly sync meeting for Project Alpha development",
-      s3Key: "videos/team-meeting-alpha.mp4", 
-      s3Url: "https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_5mb.mp4",
-      language: "english",
-      quality: "medium",
-      duration: "45:12",
-      fileSize: "128.7 MB",
-      uploadedAt: "2024-01-22",
-      thumbnail: "https://via.placeholder.com/200x120/9333EA/ffffff?text=Team+Meeting"
-    },
-    {
-      id: "4",
-      title: "Training Session - Security Protocols",
-      description: "Mandatory security training for all employees",
-      s3Key: "videos/security-training.mp4",
-      s3Url: "https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_1mb.mp4",
-      language: "spanish",
-      quality: "high", 
-      duration: "25:30",
-      fileSize: "89.4 MB",
-      uploadedAt: "2024-01-25",
-      thumbnail: "https://via.placeholder.com/200x120/7C3AED/ffffff?text=Security+Training"
-    },
-    {
-      id: "5",
-      title: "Customer Testimonials Compilation",
-      description: "Collection of customer feedback and success stories",
-      s3Key: "videos/testimonials-2024.mp4",
-      s3Url: "https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_2mb.mp4", 
-      language: "english",
-      quality: "high",
-      duration: "15:20",
-      fileSize: "67.8 MB",
-      uploadedAt: "2024-01-28",
-      thumbnail: "https://via.placeholder.com/200x120/6D28D9/ffffff?text=Testimonials"
-    },
-    // Adding more demo videos to test pagination
-    {
-      id: "6",
-      title: "Sales Training Workshop",
-      description: "Advanced sales techniques and customer engagement",
-      s3Key: "videos/sales-training.mp4",
-      s3Url: "https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_1mb.mp4",
-      language: "english",
-      quality: "high",
-      duration: "32:15",
-      fileSize: "95.3 MB",
-      uploadedAt: "2024-02-01",
-      thumbnail: "https://via.placeholder.com/200x120/8B5CF6/ffffff?text=Sales+Training"
-    },
-    {
-      id: "7",
-      title: "Technical Architecture Review",
-      description: "System architecture and scalability discussion",
-      s3Key: "videos/tech-review.mp4",
-      s3Url: "https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_2mb.mp4",
-      language: "english",
-      quality: "medium",
-      duration: "18:42",
-      fileSize: "52.7 MB",
-      uploadedAt: "2024-02-03",
-      thumbnail: "https://via.placeholder.com/200x120/A855F7/ffffff?text=Tech+Review"
-    },
-    {
-      id: "8",
-      title: "Company All-Hands Meeting",
-      description: "Quarterly company updates and announcements",
-      s3Key: "videos/all-hands.mp4",
-      s3Url: "https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_5mb.mp4",
-      language: "english",
-      quality: "high",
-      duration: "58:30",
-      fileSize: "164.2 MB",
-      uploadedAt: "2024-02-05",
-      thumbnail: "https://via.placeholder.com/200x120/9333EA/ffffff?text=All+Hands"
-    },
-    {
-      id: "9",
-      title: "UX Design Workshop",
-      description: "User experience design principles and best practices",
-      s3Key: "videos/ux-workshop.mp4",
-      s3Url: "https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_1mb.mp4",
-      language: "english",
-      quality: "high",
-      duration: "41:18",
-      fileSize: "118.6 MB",
-      uploadedAt: "2024-02-08",
-      thumbnail: "https://via.placeholder.com/200x120/7C3AED/ffffff?text=UX+Workshop"
-    },
-    {
-      id: "10",
-      title: "Financial Planning Session",
-      description: "Budget planning and financial projections for Q2",
-      s3Key: "videos/financial-planning.mp4",
-      s3Url: "https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_2mb.mp4",
-      language: "english",
-      quality: "medium",
-      duration: "29:45",
-      fileSize: "78.9 MB",
-      uploadedAt: "2024-02-10",
-      thumbnail: "https://via.placeholder.com/200x120/6D28D9/ffffff?text=Financial+Planning"
-    },
-    {
-      id: "11",
-      title: "DevOps Best Practices",
-      description: "CI/CD pipelines and deployment strategies",
-      s3Key: "videos/devops-practices.mp4",
-      s3Url: "https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_1mb.mp4",
-      language: "english",
-      quality: "high",
-      duration: "36:22",
-      fileSize: "102.4 MB",
-      uploadedAt: "2024-02-12",
-      thumbnail: "https://via.placeholder.com/200x120/8B5CF6/ffffff?text=DevOps"
-    },
-    {
-      id: "12",
-      title: "Marketing Strategy Review",
-      description: "Q1 marketing performance and Q2 strategy planning",
-      s3Key: "videos/marketing-strategy.mp4",
-      s3Url: "https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_5mb.mp4",
-      language: "english",
-      quality: "high",
-      duration: "44:55",
-      fileSize: "134.8 MB",
-      uploadedAt: "2024-02-15",
-      thumbnail: "https://via.placeholder.com/200x120/A855F7/ffffff?text=Marketing+Strategy"
-    },
-    {
-      id: "13",
-      title: "HR Policy Updates",
-      description: "New employee policies and benefits overview",
-      s3Key: "videos/hr-updates.mp4",
-      s3Url: "https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_1mb.mp4",
-      language: "english",
-      quality: "medium",
-      duration: "22:10",
-      fileSize: "61.5 MB",
-      uploadedAt: "2024-02-18",
-      thumbnail: "https://via.placeholder.com/200x120/9333EA/ffffff?text=HR+Updates"
+  // Helper functions with proper types
+  const formatDuration = (seconds: number): string => {
+    if (!seconds || seconds === 0) return '0:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    if (!bytes || bytes === 0) return '0 MB';
+    const mb = bytes / (1024 * 1024);
+    return `${mb.toFixed(1)} MB`;
+  };
+
+  const formatDate = (dateString: string): string => {
+    try {
+      return new Date(dateString).toLocaleDateString();
+    } catch {
+      return 'Unknown date';
     }
-  ]);
+  };
+
+  const generateThumbnailUrl = (title: string): string => {
+    const colors = ['8B5CF6', 'A855F7', '9333EA', '7C3AED', '6D28D9'];
+    const color = colors[title.length % colors.length];
+    const encodedTitle = encodeURIComponent(title.substring(0, 15));
+    return `https://via.placeholder.com/200x120/${color}/ffffff?text=${encodedTitle}`;
+  };
+
+  // Process videos data with proper typing (useCallback to prevent dependency issues)
+  const processVideosData = useCallback(async (dbVideos: DatabaseVideo[]) => {
+    const processedVideos = await Promise.all(
+      dbVideos.map(async (video) => {
+        try {
+          // Get signed URL for video playback
+          let signedUrl = '';
+          try {
+            const urlResult = await getUrl({ path: video.s3Key });
+            signedUrl = urlResult.url.toString();
+          } catch (urlError) {
+            console.warn(`Failed to get URL for ${video.s3Key}:`, urlError);
+            signedUrl = `#video-${video.id}`; // Fallback
+          }
+
+          return {
+            id: video.id,
+            title: video.title || 'Untitled Video',
+            description: video.description || 'No description',
+            s3Key: video.s3Key,
+            s3Url: signedUrl,
+            language: video.language || 'english',
+            quality: video.quality || 'medium',
+            duration: formatDuration(video.duration || 0),
+            fileSize: formatFileSize(video.fileSize || 0),
+            uploadedAt: formatDate(video.uploadedAt || new Date().toISOString()),
+            thumbnail: generateThumbnailUrl(video.title || 'Video'),
+            status: video.status || 'completed'
+          } as VideoItem;
+        } catch (error) {
+          console.error(`Error processing video ${video.id}:`, error);
+          return null;
+        }
+      })
+    );
+
+    // Filter out failed videos
+    const validVideos = processedVideos.filter((video): video is VideoItem => video !== null);
+    setVideos(validVideos);
+  }, []); // Empty dependency array since it doesn't depend on state
+
+  // Load videos from DynamoDB (useCallback to prevent dependency issues)
+  const loadVideos = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      
+      console.log('Loading videos from DynamoDB...');
+      const result = await client.models.Video.list();
+      
+      if (result.data) {
+        console.log('Videos loaded:', result.data);
+        await processVideosData(result.data as DatabaseVideo[]);
+      }
+    } catch (err) {
+      console.error('Error loading videos:', err);
+      setError('Failed to load videos from database');
+    } finally {
+      setLoading(false);
+    }
+  }, [processVideosData]); // processVideosData is now in dependencies
+
+  // Load videos on component mount with proper dependencies
+  useEffect(() => {
+    loadVideos();
+    
+    // Set up real-time subscription
+    const subscription = client.models.Video.observeQuery().subscribe({
+      next: ({ items }) => {
+        console.log('Real-time update received:', items);
+        processVideosData(items as DatabaseVideo[]);
+      },
+      error: (err) => {
+        console.error('Subscription error:', err);
+        setError('Failed to sync with database');
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [loadVideos, processVideosData]); // Now includes all dependencies
 
   const filteredVideos = videos.filter(video =>
     video.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -238,21 +200,42 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
     setEditQuality(video.quality);
   };
 
-  const handleEditSave = (id: string) => {
-    setVideos(videos.map(video =>
-      video.id === id ? { 
-        ...video, 
+  const handleEditSave = async (id: string) => {
+    try {
+      console.log('Updating video:', id);
+      
+      await client.models.Video.update({
+        id,
         title: editTitle,
         description: editDescription,
         language: editLanguage,
         quality: editQuality
-      } : video
-    ));
-    setEditingId(null);
-    setEditTitle("");
-    setEditDescription("");
-    setEditLanguage("");
-    setEditQuality("");
+      });
+
+      console.log('Video updated successfully');
+      
+      // Update local state
+      setVideos(videos.map(video =>
+        video.id === id ? { 
+          ...video, 
+          title: editTitle,
+          description: editDescription,
+          language: editLanguage,
+          quality: editQuality
+        } : video
+      ));
+
+      // Clear editing state
+      setEditingId(null);
+      setEditTitle("");
+      setEditDescription("");
+      setEditLanguage("");
+      setEditQuality("");
+      
+    } catch (error) {
+      console.error('Error updating video:', error);
+      alert('Failed to update video. Please try again.');
+    }
   };
 
   const handleEditCancel = () => {
@@ -263,37 +246,81 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
     setEditQuality("");
   };
 
-  const handleDelete = (id: string) => {
-    if (window.confirm("Are you sure you want to delete this video?")) {
+  const handleDelete = async (id: string) => {
+    if (!window.confirm("Are you sure you want to delete this video? This will remove it from S3 and the database.")) {
+      return;
+    }
+
+    try {
+      const video = videos.find(v => v.id === id);
+      if (!video) return;
+
+      console.log('Deleting video:', id, video.s3Key);
+
+      // Delete from S3
+      try {
+        await remove({ path: video.s3Key });
+        console.log('S3 file deleted');
+      } catch (s3Error) {
+        console.warn('S3 deletion failed (file may not exist):', s3Error);
+      }
+
+      // Delete from DynamoDB
+      await client.models.Video.delete({ id });
+      console.log('Database record deleted');
+
+      // Update local state
       setVideos(videos.filter(video => video.id !== id));
       setSelectedVideos(selectedVideos.filter(selectedId => selectedId !== id));
-      
+
       // Adjust current page if necessary
-      const newFilteredVideos = videos.filter(video => video.id !== id).filter(video =>
-        video.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        video.description.toLowerCase().includes(searchTerm.toLowerCase())
-      );
+      const newFilteredVideos = videos.filter(video => video.id !== id);
       const newTotalPages = Math.ceil(newFilteredVideos.length / videosPerPage);
       if (currentPage > newTotalPages && newTotalPages > 0) {
         setCurrentPage(newTotalPages);
       }
+
+    } catch (error) {
+      console.error('Error deleting video:', error);
+      alert('Failed to delete video. Please try again.');
     }
   };
 
-  const handleBulkDelete = () => {
-    if (selectedVideos.length > 0 && window.confirm(`Delete ${selectedVideos.length} selected videos?`)) {
+  const handleBulkDelete = async () => {
+    if (selectedVideos.length === 0) return;
+    
+    if (!window.confirm(`Delete ${selectedVideos.length} selected videos? This will remove them from S3 and the database.`)) {
+      return;
+    }
+
+    try {
+      console.log('Bulk deleting videos:', selectedVideos);
+
+      // Delete each video
+      await Promise.all(selectedVideos.map(async (videoId) => {
+        const video = videos.find(v => v.id === videoId);
+        if (!video) return;
+
+        // Delete from S3
+        try {
+          await remove({ path: video.s3Key });
+        } catch (s3Error) {
+          console.warn(`S3 deletion failed for ${video.s3Key}:`, s3Error);
+        }
+
+        // Delete from DynamoDB
+        await client.models.Video.delete({ id: videoId });
+      }));
+
+      // Update local state
       setVideos(videos.filter(video => !selectedVideos.includes(video.id)));
       setSelectedVideos([]);
-      
-      // Adjust current page if necessary
-      const newFilteredVideos = videos.filter(video => !selectedVideos.includes(video.id)).filter(video =>
-        video.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        video.description.toLowerCase().includes(searchTerm.toLowerCase())
-      );
-      const newTotalPages = Math.ceil(newFilteredVideos.length / videosPerPage);
-      if (currentPage > newTotalPages && newTotalPages > 0) {
-        setCurrentPage(newTotalPages);
-      }
+
+      console.log('Bulk deletion completed');
+
+    } catch (error) {
+      console.error('Error during bulk deletion:', error);
+      alert('Some videos failed to delete. Please try again.');
     }
   };
 
@@ -327,6 +354,47 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
     }
   };
 
+  if (loading) {
+    return (
+      <div className="video-manager">
+        <header className="header">
+          <div className="header-left">
+            <h1 className="logo">🎬 File Uploader</h1>
+          </div>
+        </header>
+        <main className="manager-content">
+          <div className="loading-state">
+            <div className="loading-icon">⏳</div>
+            <h3>Loading videos from S3...</h3>
+            <p>Syncing with database and generating signed URLs...</p>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="video-manager">
+        <header className="header">
+          <div className="header-left">
+            <h1 className="logo">🎬 File Uploader</h1>
+          </div>
+        </header>
+        <main className="manager-content">
+          <div className="error-state">
+            <div className="error-icon">❌</div>
+            <h3>Error loading videos</h3>
+            <p>{error}</p>
+            <button className="action-btn primary" onClick={loadVideos}>
+              Retry
+            </button>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="video-manager">
       <header className="header">
@@ -344,7 +412,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
         <div className="manager-header">
           <div className="manager-title">
             <h2>Video Library</h2>
-            <span className="video-count">{filteredVideos.length} videos total</span>
+            <span className="video-count">{filteredVideos.length} videos total (S3 + DynamoDB)</span>
           </div>
           
           <div className="manager-actions">
@@ -405,6 +473,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
                     <div className="play-button-small">▶</div>
                   </div>
                   <div className="duration-badge-small">{video.duration}</div>
+                  <div className="s3-badge">S3</div>
                 </div>
 
                 <div className="video-details">
@@ -456,7 +525,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
                       </div>
                       <div className="edit-buttons-inline">
                         <button className="save-btn-inline" onClick={() => handleEditSave(video.id)}>
-                          Save
+                          Save to DB
                         </button>
                         <button className="cancel-btn-inline" onClick={handleEditCancel}>
                           Cancel
@@ -467,6 +536,8 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
                     <>
                       <h3 className="video-title-row" onClick={() => onViewVideo(video)}>
                         {video.title}
+                        {video.status === 'processing' && <span className="status-badge processing">Processing</span>}
+                        {video.status === 'failed' && <span className="status-badge failed">Failed</span>}
                       </h3>
                       <p className="video-description-row">{video.description}</p>
                       <div className="video-meta-row">
@@ -474,6 +545,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
                         <span className="meta-item">📏 {video.fileSize}</span>
                         <span className="meta-item">🌐 {video.language}</span>
                         <span className={`quality-badge ${video.quality}`}>{video.quality.toUpperCase()}</span>
+                        <span className="meta-item">🗂️ {video.s3Key}</span>
                       </div>
                     </>
                   )}
@@ -483,14 +555,14 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
                   <button 
                     className="action-icon-large"
                     onClick={() => handleEditStart(video)}
-                    title="Edit video"
+                    title="Edit video metadata"
                   >
                     ✏️ Edit
                   </button>
                   <button 
-                    className="action-icon-large"
+                    className="action-icon-large danger"
                     onClick={() => handleDelete(video.id)}
-                    title="Delete video"
+                    title="Delete from S3 + DB"
                   >
                     🗑️ Delete
                   </button>
@@ -507,11 +579,11 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
             <p>
               {searchTerm 
                 ? "Try adjusting your search terms" 
-                : "Upload your first video to get started"
+                : "Upload your first video to S3 to get started"
               }
             </p>
             <button className="action-btn primary" onClick={onUploadNew}>
-              Upload Video
+              Upload Video to S3
             </button>
           </div>
         )}
@@ -554,7 +626,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
           ← Back to Home
         </button>
         <div className="storage-info">
-          <span>Storage used: 1.2 GB / 5 GB | Page {currentPage} of {totalPages}</span>
+          <span>S3 Bucket: file-uploader-demo-rodes-01 | Page {currentPage} of {totalPages}</span>
         </div>
       </div>
     </div>

@@ -1,4 +1,4 @@
-// components/ExportOptions.tsx
+// components/ExportOptions.tsx - FIXED LAYOUT
 import { ExportSettings } from "../App";
 
 interface ExportOptionsProps {
@@ -31,7 +31,7 @@ const ExportOptions: React.FC<ExportOptionsProps> = ({
           <h1 className="logo">🎬 File Uploader</h1>
         </div>
         <div className="header-right">
-          <button className="header-btn">Export Options</button>
+          <button className="header-btn active">Export Options</button>
         </div>
       </header>
 
@@ -47,7 +47,7 @@ const ExportOptions: React.FC<ExportOptionsProps> = ({
                   checked={settings.format === 'txt'}
                   onChange={() => handleFormatChange('txt')}
                 />
-                <span>Text (.txt)</span>
+                <span className="format-text">Text (.txt)</span>
               </label>
               <label className="format-option">
                 <input
@@ -56,7 +56,7 @@ const ExportOptions: React.FC<ExportOptionsProps> = ({
                   checked={settings.format === 'pdf'}
                   onChange={() => handleFormatChange('pdf')}
                 />
-                <span>PDF (.pdf)</span>
+                <span className="format-text">PDF (.pdf)</span>
               </label>
               <label className="format-option">
                 <input
@@ -65,7 +65,7 @@ const ExportOptions: React.FC<ExportOptionsProps> = ({
                   checked={settings.format === 'docx'}
                   onChange={() => handleFormatChange('docx')}
                 />
-                <span>Word (.docx)</span>
+                <span className="format-text">Word (.docx)</span>
               </label>
             </div>
           </div>
@@ -79,7 +79,7 @@ const ExportOptions: React.FC<ExportOptionsProps> = ({
                   checked={settings.includeTimestamps}
                   onChange={(e) => handleTimestampsChange(e.target.checked)}
                 />
-                <span>Include Timestamps</span>
+                <span className="setting-text">Include Timestamps</span>
               </label>
               <label className="setting-option">
                 <input
@@ -87,12 +87,12 @@ const ExportOptions: React.FC<ExportOptionsProps> = ({
                   checked={settings.includePageNumbers}
                   onChange={(e) => handlePageNumbersChange(e.target.checked)}
                 />
-                <span>Include Page Numbers</span>
+                <span className="setting-text">Include Page Numbers</span>
               </label>
             </div>
 
             <div className="action-buttons-export">
-              <button className="export-btn primary" onClick={onSave}>
+              <button className="export-save-btn" onClick={onSave}>
                 Save
               </button>
             </div>

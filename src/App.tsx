@@ -1,4 +1,4 @@
-// App.tsx
+// App.tsx - S3 INTEGRATION
 import { useState } from "react";
 import UploadScreen from "./components/UploadScreen";
 import VideoViewer from "./components/VideoViewer";
@@ -7,12 +7,21 @@ import VideoManager from "./components/VideoManager";
 import type { VideoItem } from "./components/VideoManager";
 import "./App.css";
 
+// Real video data type matching DynamoDB schema
 export type VideoData = {
-  file: File | null;
-  url: string;
+  id?: string;
+  title: string;
+  description?: string;
+  s3Key: string;
+  s3Url: string;
   language: string;
   quality: string;
-  transcription: string;
+  transcription?: string;
+  duration?: number;
+  fileSize: number;
+  mimeType: string;
+  uploadedAt: string;
+  status: "uploading" | "processing" | "completed" | "failed";
 };
 
 export type ExportSettings = {
@@ -23,42 +32,45 @@ export type ExportSettings = {
 
 function App() {
   const [currentScreen, setCurrentScreen] = useState<'upload' | 'viewer' | 'export' | 'manager'>('upload');
-  const [videoData, setVideoData] = useState<VideoData>({
-    file: null,
-    url: '',
-    language: 'english',
-    quality: 'high',
-    transcription: ''
-  });
+  const [currentVideo, setCurrentVideo] = useState<VideoData | null>(null);
   const [exportSettings, setExportSettings] = useState<ExportSettings>({
     format: 'pdf',
     includeTimestamps: true,
     includePageNumbers: false
   });
 
-  const handleVideoUpload = (file: File, language: string, quality: string) => {
-    // Demo: usando video de YouTube como placeholder
-    const demoTranscription = `Welcome to the lecture on transcription editing. In this session, we will...
-At the thirty-second mark, we discuss the features of the editor...
-One minute in, we look at advanced editing techniques...
-This demonstrates how the transcription would appear after processing the uploaded video.
-The system analyzes the audio track and converts speech to text using advanced AI algorithms.
-Multiple speakers can be identified and their dialogue separated for clarity.
-Technical terms and proper nouns are recognized and formatted appropriately.
-Timestamps are automatically generated to sync with the video playback.`;
+  const handleVideoUpload = async (file: File, language: string, quality: string) => {
+    try {
+      // Create video data object for processing
+      const videoData: VideoData = {
+        title: file.name.replace(/\.[^/.]+$/, ""), // Remove file extension
+        description: `Uploaded video: ${file.name}`,
+        s3Key: `videos/${Date.now()}-${file.name}`,
+        s3Url: '', // Will be set after upload
+        language,
+        quality,
+        transcription: 'Processing... Transcription will be available shortly.',
+        duration: 0,
+        fileSize: file.size,
+        mimeType: file.type,
+        uploadedAt: new Date().toISOString(),
+        status: 'uploading'
+      };
 
-    setVideoData({
-      file,
-      url: 'https://youtube.com/shorts/CHxJtdXHOU4?si=bLtC4WVXVvkjSqqu',
-      language,
-      quality,
-      transcription: demoTranscription
-    });
-    setCurrentScreen('viewer');
+      setCurrentVideo(videoData);
+      setCurrentScreen('viewer');
+
+      // Note: Real S3 upload will be implemented in UploadScreen component
+      console.log('Video upload initiated:', videoData);
+    } catch (error) {
+      console.error('Error uploading video:', error);
+      alert('Error uploading video. Please try again.');
+    }
   };
 
   const handleBack = () => {
     setCurrentScreen('upload');
+    setCurrentVideo(null);
   };
 
   const handleExportOptions = () => {
@@ -66,19 +78,53 @@ Timestamps are automatically generated to sync with the video playback.`;
   };
 
   const handleSaveSettings = () => {
-    // Regresar a la pantalla anterior
     if (currentScreen === 'export') {
-      setCurrentScreen(videoData.file ? 'viewer' : 'upload');
+      setCurrentScreen(currentVideo ? 'viewer' : 'upload');
     }
   };
 
   const handleDownload = () => {
-    // Simular descarga
-    const blob = new Blob([videoData.transcription], { type: 'text/plain' });
+    if (!currentVideo?.transcription) {
+      alert('No transcription available for download.');
+      return;
+    }
+
+    // Create downloadable content
+    let content = currentVideo.transcription;
+    let filename = `transcription-${currentVideo.title}`;
+    let mimeType = 'text/plain';
+
+    // Format content based on export settings
+    if (exportSettings.includeTimestamps) {
+      content = `[${currentVideo.uploadedAt}] ${content}`;
+    }
+
+    if (exportSettings.includePageNumbers) {
+      content = `Page 1\n\n${content}`;
+    }
+
+    // Set file type
+    switch (exportSettings.format) {
+      case 'txt':
+        mimeType = 'text/plain';
+        filename += '.txt';
+        break;
+      case 'pdf':
+        mimeType = 'application/pdf';
+        filename += '.pdf';
+        break;
+      case 'docx':
+        mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+        filename += '.docx';
+        break;
+    }
+
+    // Download file
+    const blob = new Blob([content], { type: mimeType });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `transcription.${exportSettings.format}`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -91,17 +137,28 @@ Timestamps are automatically generated to sync with the video playback.`;
 
   const handleViewVideoFromManager = (video: VideoItem) => {
     // Convert VideoItem to VideoData format
-    setVideoData({
-      file: null, // We don't have the original file in manager
-      url: video.s3Url,
+    const videoData: VideoData = {
+      id: video.id,
+      title: video.title,
+      description: video.description,
+      s3Key: video.s3Key,
+      s3Url: video.s3Url,
       language: video.language,
       quality: video.quality,
-      transcription: `Transcription for "${video.title}"\n\n${video.description}\n\nThis is a demo transcription that would normally be generated from the actual video content. The transcription would include timestamps and formatted text based on the audio analysis.`
-    });
+      transcription: `Real transcription for "${video.title}" would appear here. This content would be generated from the actual video audio using AI transcription services.`,
+      duration: parseFloat(video.duration.replace(':', '.')) * 60, // Convert MM:SS to seconds
+      fileSize: parseInt(video.fileSize.replace(/[^\d]/g, '')) * 1024 * 1024, // Convert MB to bytes
+      mimeType: 'video/mp4',
+      uploadedAt: video.uploadedAt,
+      status: 'completed'
+    };
+
+    setCurrentVideo(videoData);
     setCurrentScreen('viewer');
   };
 
   const handleUploadFromManager = () => {
+    setCurrentVideo(null);
     setCurrentScreen('upload');
   };
 
@@ -114,9 +171,9 @@ Timestamps are automatically generated to sync with the video playback.`;
           onVideoManager={handleVideoManager}
         />
       )}
-      {currentScreen === 'viewer' && (
+      {currentScreen === 'viewer' && currentVideo && (
         <VideoViewer 
-          videoData={videoData}
+          videoData={currentVideo}
           onBack={handleBack}
           onExportOptions={handleExportOptions}
           onDownload={handleDownload}
