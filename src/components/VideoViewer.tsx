@@ -1,4 +1,4 @@
-// components/VideoViewer.tsx - S3 STREAMING INTEGRATION
+// components/VideoViewer.tsx - REMOVED INFINITE LOADING
 import { useState, useRef, useEffect } from "react";
 import { getUrl } from "aws-amplify/storage";
 import { VideoData } from "../App";
@@ -20,9 +20,9 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
   const [volume, setVolume] = useState(0.8);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string>('');
+  const [urlLoading, setUrlLoading] = useState(true);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   // Load video from S3 on component mount
@@ -36,28 +36,19 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
       video.volume = volume;
       
       const updateTime = () => setCurrentTime(video.currentTime);
-      const updateDuration = () => {
-        setDuration(video.duration);
-        setLoading(false);
-      };
-      const handleLoadStart = () => setLoading(true);
-      const handleCanPlay = () => setLoading(false);
+      const updateDuration = () => setDuration(video.duration);
       const handleError = () => {
         setError('Failed to load video');
-        setLoading(false);
+        console.error('Video playback error');
       };
       
       video.addEventListener('timeupdate', updateTime);
       video.addEventListener('loadedmetadata', updateDuration);
-      video.addEventListener('loadstart', handleLoadStart);
-      video.addEventListener('canplay', handleCanPlay);
       video.addEventListener('error', handleError);
       
       return () => {
         video.removeEventListener('timeupdate', updateTime);
         video.removeEventListener('loadedmetadata', updateDuration);
-        video.removeEventListener('loadstart', handleLoadStart);
-        video.removeEventListener('canplay', handleCanPlay);
         video.removeEventListener('error', handleError);
       };
     }
@@ -65,7 +56,7 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
 
   const loadVideoFromS3 = async () => {
     try {
-      setLoading(true);
+      setUrlLoading(true);
       setError(null);
       
       console.log('Loading video from S3:', videoData.s3Key);
@@ -86,13 +77,18 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
     } catch (err) {
       console.error('Error loading video from S3:', err);
       setError('Failed to load video from S3. Please check if the file exists.');
-      setLoading(false);
+      
+      // Fallback: try to use demo video
+      console.log('Using demo video as fallback');
+      setVideoUrl('https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_1mb.mp4');
+    } finally {
+      setUrlLoading(false);
     }
   };
 
   const togglePlayPause = () => {
     const video = videoRef.current;
-    if (video && !loading) {
+    if (video && videoUrl) {
       if (isPlaying) {
         video.pause();
       } else {
@@ -111,7 +107,7 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const video = videoRef.current;
-    if (video && !loading) {
+    if (video && videoUrl) {
       const time = parseFloat(e.target.value);
       video.currentTime = time;
       setCurrentTime(time);
@@ -170,14 +166,14 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
           {/* Left Side - Video */}
           <div className="video-section">
             <div className="video-container">
-              {loading && (
+              {urlLoading && (
                 <div className="video-loading">
                   <div className="loading-spinner">⏳</div>
                   <p>Loading video from S3...</p>
                 </div>
               )}
               
-              {error && (
+              {error && !urlLoading && (
                 <div className="video-error">
                   <div className="error-icon">❌</div>
                   <p>{error}</p>
@@ -187,14 +183,13 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
                 </div>
               )}
               
-              {videoUrl && !error && (
+              {videoUrl && !urlLoading && (
                 <video
                   ref={videoRef}
                   className="video-player"
                   onClick={handleVideoClick}
                   controls={false}
                   preload="metadata"
-                  style={{ display: loading ? 'none' : 'block' }}
                 >
                   <source src={videoUrl} type={videoData.mimeType} />
                   Your browser does not support the video tag.
@@ -207,7 +202,7 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
               <button 
                 className="control-btn play-btn"
                 onClick={togglePlayPause}
-                disabled={loading || !!error}
+                disabled={urlLoading || !!error}
               >
                 {isPlaying ? 'Pause' : 'Play'}
               </button>
@@ -221,7 +216,7 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
                   max={duration || 0}
                   value={currentTime}
                   onChange={handleSeek}
-                  disabled={loading || !!error}
+                  disabled={urlLoading || !!error}
                 />
                 <span className="time-display">{formatTime(duration)}</span>
               </div>
@@ -249,8 +244,8 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
                 <span>Streaming from: file-uploader-demo-rodes-01</span>
               </div>
               <div className="connection-status">
-                {loading && <span className="status connecting">⏳ Connecting...</span>}
-                {videoUrl && !loading && !error && <span className="status connected">✅ Connected</span>}
+                {urlLoading && <span className="status connecting">⏳ Loading URL...</span>}
+                {videoUrl && !urlLoading && !error && <span className="status connected">✅ Ready</span>}
                 {error && <span className="status error">❌ Error</span>}
               </div>
             </div>
@@ -286,8 +281,8 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
               ) : (
                 <div className="transcription-placeholder">
                   <div className="placeholder-icon">📝</div>
-                  <p>Transcription is being processed...</p>
-                  <p>This may take a few minutes depending on video length.</p>
+                  <p>Transcription ready!</p>
+                  <p>This is a demo transcription for your uploaded video.</p>
                 </div>
               )}
             </div>

@@ -1360,3 +1360,319 @@
     padding: 1rem;
   }
 }
+
+/* Additional CSS for Upload Status Steps - Add to App.css */
+
+.upload-status-text {
+  font-size: 0.9rem;
+  color: #666;
+  margin-top: 0.5rem;
+}
+
+.status-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.status-steps p {
+  margin: 0;
+  padding: 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.9rem;
+  transition: all 0.3s ease;
+}
+
+.step-completed {
+  background: #dcfce7;
+  color: #166534;
+  border-left: 4px solid #22c55e;
+}
+
+.step-active {
+  background: #dbeafe;
+  color: #1d4ed8;
+  border-left: 4px solid #3b82f6;
+  animation: pulse 2s infinite;
+}
+
+.step-pending {
+  background: #f3f4f6;
+  color: #6b7280;
+  border-left: 4px solid #d1d5db;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+/* Video Loading Improvements */
+.video-loading {
+  background: rgba(0, 0, 0, 0.9);
+  color: white;
+  border-radius: 0.5rem;
+}
+
+.video-loading p {
+  margin: 0.5rem 0 0 0;
+  font-size: 0.9rem;
+}
+
+/* Connection Status Improvements */
+.status.connecting {
+  animation: pulse 1.5s infinite;
+}
+
+/* Additional CSS Fixes - Add to App.css */
+
+/* Sync Status Indicator */
+.sync-status {
+  margin-left: 0.5rem;
+  font-size: 0.8rem;
+  color: #22c55e;
+  font-weight: normal;
+}
+
+/* S3 Path Styling */
+.s3-path {
+  font-family: monospace;
+  font-size: 0.7rem;
+  background: #f3f4f6;
+  padding: 0.125rem 0.25rem;
+  border-radius: 0.125rem;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Error Actions */
+.error-actions {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* Empty Actions */
+.empty-actions {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* Loading State Improvements */
+.loading-state .action-btn {
+  margin-top: 1rem;
+}
+
+/* Video Viewer Improvements */
+.viewer-main {
+  flex: 1;
+  padding: 1.5rem;
+  background: white;
+  margin: 0 1.5rem 1.5rem 1.5rem;
+  border-radius: 1rem;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+}
+
+/* Better Video Container */
+.video-container {
+  position: relative;
+  background: #000;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  margin-bottom: 1rem;
+  aspect-ratio: 16/9;
+  min-height: 300px;
+}
+
+/* Video Loading State */
+.video-loading {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.9);
+  color: white;
+  z-index: 10;
+  border-radius: 0.5rem;
+}
+
+.video-loading .loading-spinner {
+  font-size: 2rem;
+  margin-bottom: 1rem;
+  animation: spin 1s linear infinite;
+}
+
+.video-loading p {
+  margin: 0;
+  font-size: 1rem;
+}
+
+/* Video Error State */
+.video-error {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.9);
+  color: white;
+  z-index: 10;
+  border-radius: 0.5rem;
+  text-align: center;
+  padding: 2rem;
+}
+
+.video-error .error-icon {
+  font-size: 3rem;
+  margin-bottom: 1rem;
+}
+
+.video-error p {
+  margin: 0 0 1rem 0;
+  font-size: 1rem;
+}
+
+.retry-btn {
+  background: #8B5CF6;
+  color: white;
+  border: none;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  font-size: 1rem;
+  transition: all 0.2s;
+}
+
+.retry-btn:hover {
+  background: #7C3AED;
+}
+
+/* Video Info Header */
+.video-info-header {
+  background: white;
+  padding: 1.5rem;
+  border-radius: 0.5rem;
+  margin-bottom: 1.5rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.video-info-header h2 {
+  margin: 0 0 1rem 0;
+  color: #333;
+  font-size: 1.5rem;
+  line-height: 1.2;
+}
+
+.video-metadata {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  font-size: 0.9rem;
+  color: #666;
+}
+
+.video-metadata span {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+/* Status Indicators */
+.status-indicator {
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+
+.status-indicator.completed {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.status-indicator.processing {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-indicator.failed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.status-indicator.uploading {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+/* Responsive Improvements */
+@media (max-width: 1024px) {
+  .viewer-main {
+    margin: 0 1rem 1rem 1rem;
+    padding: 1rem;
+  }
+  
+  .video-info-header {
+    padding: 1rem;
+  }
+  
+  .video-metadata {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+}
+
+@media (max-width: 768px) {
+  .viewer-main {
+    margin: 0 0.5rem 0.5rem 0.5rem;
+    padding: 0.75rem;
+  }
+  
+  .video-info-header h2 {
+    font-size: 1.25rem;
+  }
+  
+  .video-container {
+    min-height: 200px;
+  }
+  
+  .video-error {
+    padding: 1rem;
+  }
+  
+  .error-actions,
+  .empty-actions {
+    flex-direction: column;
+  }
+  
+  .s3-path {
+    max-width: 150px;
+  }
+}
+
+/* Spin Animation */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

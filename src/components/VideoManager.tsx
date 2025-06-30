@@ -1,4 +1,4 @@
-// components/VideoManager.tsx - FIXED HOOKS & TYPES
+// components/VideoManager.tsx - FIXED VIDEO LOADING FROM S3
 import { useState, useEffect, useCallback } from "react";
 import { generateClient } from "aws-amplify/data";
 import { getUrl, remove } from "aws-amplify/storage";
@@ -102,16 +102,27 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
 
   // Process videos data with proper typing (useCallback to prevent dependency issues)
   const processVideosData = useCallback(async (dbVideos: DatabaseVideo[]) => {
+    console.log('Processing videos from DB:', dbVideos);
+    
+    if (!dbVideos || dbVideos.length === 0) {
+      console.log('No videos found in database');
+      setVideos([]);
+      return;
+    }
+
     const processedVideos = await Promise.all(
-      dbVideos.map(async (video) => {
+      dbVideos.map(async (video, index) => {
         try {
+          console.log(`Processing video ${index + 1}/${dbVideos.length}:`, video.s3Key);
+          
           // Get signed URL for video playback
           let signedUrl = '';
           try {
             const urlResult = await getUrl({ path: video.s3Key });
             signedUrl = urlResult.url.toString();
+            console.log(`✅ Got URL for ${video.s3Key}`);
           } catch (urlError) {
-            console.warn(`Failed to get URL for ${video.s3Key}:`, urlError);
+            console.warn(`❌ Failed to get URL for ${video.s3Key}:`, urlError);
             signedUrl = `#video-${video.id}`; // Fallback
           }
 
@@ -138,6 +149,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
 
     // Filter out failed videos
     const validVideos = processedVideos.filter((video): video is VideoItem => video !== null);
+    console.log(`✅ Successfully processed ${validVideos.length}/${dbVideos.length} videos`);
     setVideos(validVideos);
   }, []); // Empty dependency array since it doesn't depend on state
 
@@ -147,16 +159,21 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
       setLoading(true);
       setError(null);
       
-      console.log('Loading videos from DynamoDB...');
+      console.log('🔄 Loading videos from DynamoDB...');
       const result = await client.models.Video.list();
       
-      if (result.data) {
-        console.log('Videos loaded:', result.data);
+      console.log('📋 DynamoDB response:', result);
+      
+      if (result.data && result.data.length > 0) {
+        console.log(`📹 Found ${result.data.length} videos in database`);
         await processVideosData(result.data as DatabaseVideo[]);
+      } else {
+        console.log('📭 No videos found in database');
+        setVideos([]);
       }
     } catch (err) {
-      console.error('Error loading videos:', err);
-      setError('Failed to load videos from database');
+      console.error('❌ Error loading videos:', err);
+      setError(`Failed to load videos: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
       setLoading(false);
     }
@@ -164,21 +181,28 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
 
   // Load videos on component mount with proper dependencies
   useEffect(() => {
+    console.log('🚀 VideoManager mounted, loading videos...');
     loadVideos();
     
     // Set up real-time subscription
+    console.log('🔔 Setting up real-time subscription...');
     const subscription = client.models.Video.observeQuery().subscribe({
       next: ({ items }) => {
-        console.log('Real-time update received:', items);
-        processVideosData(items as DatabaseVideo[]);
+        console.log('🔔 Real-time update received:', items.length, 'items');
+        if (items && items.length > 0) {
+          processVideosData(items as DatabaseVideo[]);
+        }
       },
       error: (err) => {
-        console.error('Subscription error:', err);
+        console.error('🔔 Subscription error:', err);
         setError('Failed to sync with database');
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      console.log('🔌 Unsubscribing from real-time updates');
+      subscription.unsubscribe();
+    };
   }, [loadVideos, processVideosData]); // Now includes all dependencies
 
   const filteredVideos = videos.filter(video =>
@@ -366,7 +390,10 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
           <div className="loading-state">
             <div className="loading-icon">⏳</div>
             <h3>Loading videos from S3...</h3>
-            <p>Syncing with database and generating signed URLs...</p>
+            <p>Connecting to DynamoDB and generating signed URLs...</p>
+            <button className="action-btn secondary" onClick={loadVideos}>
+              Retry Loading
+            </button>
           </div>
         </main>
       </div>
@@ -386,9 +413,17 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
             <div className="error-icon">❌</div>
             <h3>Error loading videos</h3>
             <p>{error}</p>
-            <button className="action-btn primary" onClick={loadVideos}>
-              Retry
-            </button>
+            <div className="error-actions">
+              <button className="action-btn primary" onClick={loadVideos}>
+                Retry
+              </button>
+              <button className="action-btn secondary" onClick={() => {
+                setError(null);
+                setVideos([]);
+              }}>
+                Clear Error
+              </button>
+            </div>
           </div>
         </main>
       </div>
@@ -412,7 +447,12 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
         <div className="manager-header">
           <div className="manager-title">
             <h2>Video Library</h2>
-            <span className="video-count">{filteredVideos.length} videos total (S3 + DynamoDB)</span>
+            <span className="video-count">
+              {filteredVideos.length} videos total 
+              {videos.length > 0 && (
+                <span className="sync-status">🔄 Synced with S3+DB</span>
+              )}
+            </span>
           </div>
           
           <div className="manager-actions">
@@ -545,7 +585,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
                         <span className="meta-item">📏 {video.fileSize}</span>
                         <span className="meta-item">🌐 {video.language}</span>
                         <span className={`quality-badge ${video.quality}`}>{video.quality.toUpperCase()}</span>
-                        <span className="meta-item">🗂️ {video.s3Key}</span>
+                        <span className="meta-item s3-path">🗂️ {video.s3Key}</span>
                       </div>
                     </>
                   )}
@@ -572,7 +612,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
           ))}
         </div>
 
-        {filteredVideos.length === 0 && (
+        {filteredVideos.length === 0 && !loading && (
           <div className="empty-state">
             <div className="empty-icon">📹</div>
             <h3>No videos found</h3>
@@ -582,9 +622,14 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
                 : "Upload your first video to S3 to get started"
               }
             </p>
-            <button className="action-btn primary" onClick={onUploadNew}>
-              Upload Video to S3
-            </button>
+            <div className="empty-actions">
+              <button className="action-btn primary" onClick={onUploadNew}>
+                Upload Video to S3
+              </button>
+              <button className="action-btn secondary" onClick={loadVideos}>
+                Refresh List
+              </button>
+            </div>
           </div>
         )}
 

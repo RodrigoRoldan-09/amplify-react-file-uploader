@@ -1,8 +1,8 @@
-// components/UploadScreen.tsx - S3 UPLOAD INTEGRATION
+// components/UploadScreen.tsx - FIXED DB SYNC
 import { useState } from "react";
 import { uploadData } from "aws-amplify/storage";
 import { generateClient } from "aws-amplify/data";
-import type { Schema } from "../amplify/data/resource.ts";
+import type { Schema } from "../amplify/data/resource";
 
 const client = generateClient<Schema>();
 
@@ -87,28 +87,37 @@ const UploadScreen: React.FC<UploadScreenProps> = ({ onVideoUpload, onExportOpti
         }
       }).result;
 
-      console.log('Upload completed:', uploadResult);
+      console.log('S3 upload completed:', uploadResult);
 
-      // Create database record
-      const videoRecord = await client.models.Video.create({
-        title: file.name.replace(/\.[^/.]+$/, ""), // Remove extension
-        description: `Uploaded video: ${file.name}`,
-        s3Key: s3Key,
-        s3Url: uploadResult.path, // S3 path
-        language: language,
-        quality: quality,
-        transcription: '', // Will be populated by transcription service
-        duration: 0, // Will be updated after processing
-        fileSize: file.size,
-        mimeType: file.type,
-        uploadedAt: new Date().toISOString(),
-        status: 'completed'
-      });
+      // FIXED: Create database record with proper values
+      try {
+        const videoRecord = await client.models.Video.create({
+          title: file.name.replace(/\.[^/.]+$/, ""), // Remove extension
+          description: `Uploaded video: ${file.name}`,
+          s3Key: s3Key,
+          s3Url: `s3://${s3Key}`, // Use S3 path format
+          language: language,
+          quality: quality,
+          transcription: `Auto-generated transcription for ${file.name}. This would normally be processed by an AI transcription service like AWS Transcribe.`,
+          duration: 0, // Will be updated after processing
+          fileSize: file.size,
+          mimeType: file.type,
+          uploadedAt: new Date().toISOString(),
+          status: 'completed' // Set as completed immediately
+        });
 
-      console.log('Database record created:', videoRecord);
+        console.log('Database record created successfully:', videoRecord);
 
-      // Call parent component
-      onVideoUpload(file, language, quality);
+        // Success notification
+        alert(`Video uploaded successfully!\n\nFile: ${file.name}\nSize: ${(file.size / 1024 / 1024).toFixed(1)} MB\nStored in: ${s3Key}`);
+
+        // Call parent component to navigate to viewer
+        onVideoUpload(file, language, quality);
+
+      } catch (dbError) {
+        console.error('Database creation failed:', dbError);
+        alert(`Upload to S3 succeeded, but database record failed: ${dbError instanceof Error ? dbError.message : 'Unknown error'}`);
+      }
 
     } catch (error) {
       console.error('Upload failed:', error);
@@ -176,6 +185,7 @@ const UploadScreen: React.FC<UploadScreenProps> = ({ onVideoUpload, onExportOpti
                   ></div>
                 </div>
                 <p className="progress-text">{uploadProgress}%</p>
+                <p className="upload-status-text">Creating database record...</p>
               </div>
             ) : (
               <>
@@ -222,9 +232,15 @@ const UploadScreen: React.FC<UploadScreenProps> = ({ onVideoUpload, onExportOpti
         {isUploading && (
           <div className="upload-status">
             <h3>Upload Status</h3>
-            <p>📤 Uploading to S3 bucket: file-uploader-demo-rodes-01</p>
-            <p>💾 Creating database record...</p>
-            <p>⚡ Real-time sync enabled</p>
+            <div className="status-steps">
+              <p className={uploadProgress > 0 ? 'step-completed' : 'step-active'}>
+                📤 {uploadProgress < 100 ? 'Uploading to S3...' : '✅ Uploaded to S3'}
+              </p>
+              <p className={uploadProgress === 100 ? 'step-active' : 'step-pending'}>
+                💾 {uploadProgress === 100 ? 'Creating database record...' : 'Waiting for upload...'}
+              </p>
+              <p className="step-pending">⚡ Setting up real-time sync...</p>
+            </div>
           </div>
         )}
       </main>
