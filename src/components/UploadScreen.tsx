@@ -1,4 +1,4 @@
-// components/UploadScreen.tsx - FIXED DB SYNC
+// components/UploadScreen.tsx - UPDATED WITH DIRECT UPLOAD BUTTON
 import { useState } from "react";
 import { uploadData } from "aws-amplify/storage";
 import { generateClient } from "aws-amplify/data";
@@ -10,9 +10,15 @@ interface UploadScreenProps {
   onVideoUpload: (file: File, language: string, quality: string) => void;
   onExportOptions: () => void;
   onVideoManager: () => void;
+  onDirectUpload: () => void; // NEW: Direct upload option
 }
 
-const UploadScreen: React.FC<UploadScreenProps> = ({ onVideoUpload, onExportOptions, onVideoManager }) => {
+const UploadScreen: React.FC<UploadScreenProps> = ({ 
+  onVideoUpload, 
+  onExportOptions, 
+  onVideoManager, 
+  onDirectUpload 
+}) => {
   const [language, setLanguage] = useState('english');
   const [quality, setQuality] = useState('high');
   const [isUploading, setIsUploading] = useState(false);
@@ -63,7 +69,7 @@ const UploadScreen: React.FC<UploadScreenProps> = ({ onVideoUpload, onExportOpti
       const timestamp = Date.now();
       const s3Key = `videos/${timestamp}-${file.name}`;
 
-      console.log('Starting upload to S3...', s3Key);
+      console.log('🚀 Starting upload to S3...', s3Key);
 
       // Upload to S3
       const uploadResult = await uploadData({
@@ -81,32 +87,31 @@ const UploadScreen: React.FC<UploadScreenProps> = ({ onVideoUpload, onExportOpti
             if (totalBytes) {
               const progress = Math.round((transferredBytes / totalBytes) * 100);
               setUploadProgress(progress);
-              console.log(`Upload progress: ${progress}%`);
+              console.log(`📊 Upload progress: ${progress}%`);
             }
           }
         }
       }).result;
 
-      console.log('S3 upload completed:', uploadResult);
+      console.log('✅ S3 upload completed:', uploadResult);
 
-      // FIXED: Create database record with proper values
+      // Create database record
       try {
         const videoRecord = await client.models.Video.create({
-          title: file.name.replace(/\.[^/.]+$/, ""), // Remove extension
+          title: file.name.replace(/\.[^/.]+$/, ""),
           description: `Uploaded video: ${file.name}`,
           s3Key: s3Key,
-          s3Url: `s3://${s3Key}`, // Use S3 path format
           language: language,
           quality: quality,
           transcription: `Auto-generated transcription for ${file.name}. This would normally be processed by an AI transcription service like AWS Transcribe.`,
-          duration: 0, // Will be updated after processing
+          duration: 0,
           fileSize: file.size,
           mimeType: file.type,
           uploadedAt: new Date().toISOString(),
-          status: 'completed' // Set as completed immediately
+          status: 'completed'
         });
 
-        console.log('Database record created successfully:', videoRecord);
+        console.log('✅ Database record created successfully:', videoRecord);
 
         // Success notification
         alert(`Video uploaded successfully!\n\nFile: ${file.name}\nSize: ${(file.size / 1024 / 1024).toFixed(1)} MB\nStored in: ${s3Key}`);
@@ -115,12 +120,12 @@ const UploadScreen: React.FC<UploadScreenProps> = ({ onVideoUpload, onExportOpti
         onVideoUpload(file, language, quality);
 
       } catch (dbError) {
-        console.error('Database creation failed:', dbError);
+        console.error('❌ Database creation failed:', dbError);
         alert(`Upload to S3 succeeded, but database record failed: ${dbError instanceof Error ? dbError.message : 'Unknown error'}`);
       }
 
     } catch (error) {
-      console.error('Upload failed:', error);
+      console.error('❌ Upload failed:', error);
       alert(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setIsUploading(false);
@@ -159,10 +164,21 @@ const UploadScreen: React.FC<UploadScreenProps> = ({ onVideoUpload, onExportOpti
             onClick={handleFileSelect}
             disabled={isUploading}
           >
-            {isUploading ? 'Uploading...' : 'Upload'}
+            {isUploading ? 'Uploading...' : 'Quick Upload'}
           </button>
-          <button className="header-btn" onClick={onVideoManager}>Upload Videos</button>
-          <button className="header-btn" onClick={onExportOptions}>Export Options</button>
+          <button 
+            className="header-btn secondary" 
+            onClick={onDirectUpload}
+            disabled={isUploading}
+          >
+            📤 Full Upload
+          </button>
+          <button className="header-btn" onClick={onVideoManager}>
+            📂 Video Library
+          </button>
+          <button className="header-btn" onClick={onExportOptions}>
+            ⚙️ Export Options
+          </button>
         </div>
       </header>
 
@@ -185,14 +201,23 @@ const UploadScreen: React.FC<UploadScreenProps> = ({ onVideoUpload, onExportOpti
                   ></div>
                 </div>
                 <p className="progress-text">{uploadProgress}%</p>
-                <p className="upload-status-text">Creating database record...</p>
+                <p className="upload-status-text">
+                  {uploadProgress < 100 ? 'Uploading to S3...' : 'Creating database record...'}
+                </p>
               </div>
             ) : (
               <>
                 <div className="upload-icon">📁</div>
                 <p className="upload-text">Drag and drop video files here</p>
                 <p className="upload-or">or</p>
-                <button className="select-btn">Select Files</button>
+                <div className="upload-buttons">
+                  <button className="select-btn primary" onClick={handleFileSelect}>
+                    Quick Upload
+                  </button>
+                  <button className="select-btn secondary" onClick={onDirectUpload}>
+                    Full Upload Form
+                  </button>
+                </div>
                 <p className="upload-info">Supports: MP4, MOV, AVI (Max 500MB)</p>
               </>
             )}
@@ -229,6 +254,22 @@ const UploadScreen: React.FC<UploadScreenProps> = ({ onVideoUpload, onExportOpti
           </div>
         </div>
 
+        {/* Feature Explanation */}
+        <div className="feature-explanation">
+          <div className="feature-card">
+            <h3>📤 Quick Upload</h3>
+            <p>Fast upload with basic settings. Great for testing and quick uploads.</p>
+          </div>
+          <div className="feature-card">
+            <h3>📝 Full Upload Form</h3>
+            <p>Complete form with title, description, and metadata. Recommended for production.</p>
+          </div>
+          <div className="feature-card">
+            <h3>📂 Video Library</h3>
+            <p>View and manage all your uploaded videos. Search, edit, and organize your content.</p>
+          </div>
+        </div>
+
         {isUploading && (
           <div className="upload-status">
             <h3>Upload Status</h3>
@@ -246,7 +287,7 @@ const UploadScreen: React.FC<UploadScreenProps> = ({ onVideoUpload, onExportOpti
       </main>
 
       <footer className="footer">
-        <p>© 2023 File Uploader. All rights reserved.</p>
+        <p>© 2024 File Uploader. Upload videos to S3 and manage with DynamoDB.</p>
       </footer>
     </div>
   );

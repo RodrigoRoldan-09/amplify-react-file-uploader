@@ -1,12 +1,11 @@
-// components/VideoManager.tsx - FIXED VIDEO LOADING FROM S3
+// components/VideoManager.tsx - WITH FULL CRUD
 import { useState, useEffect, useCallback } from "react";
 import { generateClient } from "aws-amplify/data";
-import { getUrl, remove } from "aws-amplify/storage";
+import { getUrl, remove, list } from "aws-amplify/storage";
 import type { Schema } from "../amplify/data/resource";
 
 const client = generateClient<Schema>();
 
-// Define proper type for database video record
 type DatabaseVideo = {
   id: string;
   title?: string | null;
@@ -45,18 +44,23 @@ interface VideoManagerProps {
 }
 
 const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUploadNew }) => {
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editTitle, setEditTitle] = useState("");
-  const [editDescription, setEditDescription] = useState("");
-  const [editLanguage, setEditLanguage] = useState("");
-  const [editQuality, setEditQuality] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedVideos, setSelectedVideos] = useState<string[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const videosPerPage = 5;
+  const [debugInfo, setDebugInfo] = useState<string[]>([]);
+  
+  // CRUD state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editLanguage, setEditLanguage] = useState("");
+  const [editQuality, setEditQuality] = useState("");
+  const [saving, setSaving] = useState(false);
+  
+  const videosPerPage = 3;
 
   const languages = [
     { value: 'english', label: 'English' },
@@ -71,7 +75,13 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
     { value: 'arabic', label: 'Arabic' }
   ];
 
-  // Helper functions with proper types
+  const addDebugInfo = (message: string) => {
+    const timestamp = new Date().toLocaleTimeString();
+    const debugMessage = `[${timestamp}] ${message}`;
+    console.log(debugMessage);
+    setDebugInfo(prev => [...prev.slice(-10), debugMessage]);
+  };
+
   const formatDuration = (seconds: number): string => {
     if (!seconds || seconds === 0) return '0:00';
     const mins = Math.floor(seconds / 60);
@@ -100,12 +110,61 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
     return `https://via.placeholder.com/200x120/${color}/ffffff?text=${encodedTitle}`;
   };
 
-  // Process videos data with proper typing (useCallback to prevent dependency issues)
+  // Test S3 connectivity
+  const testS3Connection = useCallback(async () => {
+    try {
+      addDebugInfo('Testing S3 connectivity...');
+      const listResult = await list({ path: 'videos/' });
+      addDebugInfo(`S3 List Result: Found ${listResult.items.length} items`);
+      
+      if (listResult.items.length > 0) {
+        const firstItem = listResult.items[0];
+        addDebugInfo(`First S3 item: ${firstItem.path}`);
+        
+        try {
+          await getUrl({ path: firstItem.path });
+          addDebugInfo(`✅ S3 URL generation successful`);
+          return true;
+        } catch (urlError) {
+          addDebugInfo(`❌ S3 URL generation failed: ${urlError}`);
+          return false;
+        }
+      } else {
+        addDebugInfo('No items found in S3 videos/ folder');
+        return true;
+      }
+    } catch (error) {
+      addDebugInfo(`❌ S3 connectivity test failed: ${error}`);
+      return false;
+    }
+  }, []);
+
+  // Test DynamoDB connectivity
+  const testDynamoDBConnection = useCallback(async () => {
+    try {
+      addDebugInfo('Testing DynamoDB connectivity...');
+      const result = await client.models.Video.list();
+      addDebugInfo(`DynamoDB Result: Found ${result.data?.length || 0} records`);
+      addDebugInfo(`DynamoDB Errors: ${result.errors?.length || 0} errors`);
+      
+      if (result.errors && result.errors.length > 0) {
+        result.errors.forEach((error, index) => {
+          addDebugInfo(`DynamoDB Error ${index + 1}: ${error.message}`);
+        });
+      }
+      
+      return result;
+    } catch (error) {
+      addDebugInfo(`❌ DynamoDB connectivity test failed: ${error}`);
+      throw error;
+    }
+  }, []);
+
   const processVideosData = useCallback(async (dbVideos: DatabaseVideo[]) => {
-    console.log('Processing videos from DB:', dbVideos);
+    addDebugInfo(`Processing ${dbVideos.length} videos from database`);
     
     if (!dbVideos || dbVideos.length === 0) {
-      console.log('No videos found in database');
+      addDebugInfo('No videos to process');
       setVideos([]);
       return;
     }
@@ -113,20 +172,19 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
     const processedVideos = await Promise.all(
       dbVideos.map(async (video, index) => {
         try {
-          console.log(`Processing video ${index + 1}/${dbVideos.length}:`, video.s3Key);
+          addDebugInfo(`Processing video ${index + 1}: ${video.s3Key}`);
           
-          // Get signed URL for video playback
           let signedUrl = '';
           try {
             const urlResult = await getUrl({ path: video.s3Key });
             signedUrl = urlResult.url.toString();
-            console.log(`✅ Got URL for ${video.s3Key}`);
+            addDebugInfo(`✅ Got signed URL for ${video.s3Key}`);
           } catch (urlError) {
-            console.warn(`❌ Failed to get URL for ${video.s3Key}:`, urlError);
-            signedUrl = `#video-${video.id}`; // Fallback
+            addDebugInfo(`❌ Failed to get URL for ${video.s3Key}: ${urlError}`);
+            signedUrl = `#error-${video.id}`;
           }
 
-          return {
+          const processedVideo = {
             id: video.id,
             title: video.title || 'Untitled Video',
             description: video.description || 'No description',
@@ -140,83 +198,60 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
             thumbnail: generateThumbnailUrl(video.title || 'Video'),
             status: video.status || 'completed'
           } as VideoItem;
+
+          addDebugInfo(`✅ Processed video: ${processedVideo.title}`);
+          return processedVideo;
         } catch (error) {
-          console.error(`Error processing video ${video.id}:`, error);
+          addDebugInfo(`❌ Error processing video ${video.id}: ${error}`);
           return null;
         }
       })
     );
 
-    // Filter out failed videos
     const validVideos = processedVideos.filter((video): video is VideoItem => video !== null);
-    console.log(`✅ Successfully processed ${validVideos.length}/${dbVideos.length} videos`);
+    addDebugInfo(`✅ Successfully processed ${validVideos.length}/${dbVideos.length} videos`);
     setVideos(validVideos);
-  }, []); // Empty dependency array since it doesn't depend on state
+  }, []);
 
-  // Load videos from DynamoDB (useCallback to prevent dependency issues)
   const loadVideos = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
+      setDebugInfo([]);
       
-      console.log('🔄 Loading videos from DynamoDB...');
-      const result = await client.models.Video.list();
+      addDebugInfo('=== STARTING VIDEO LOAD PROCESS ===');
       
-      console.log('📋 DynamoDB response:', result);
+      // Test S3 first
+      const s3Works = await testS3Connection();
+      if (!s3Works) {
+        setError('S3 connectivity issues detected. Check console for details.');
+        return;
+      }
+      
+      // Test DynamoDB
+      const result = await testDynamoDBConnection();
       
       if (result.data && result.data.length > 0) {
-        console.log(`📹 Found ${result.data.length} videos in database`);
+        addDebugInfo(`Found ${result.data.length} videos in DynamoDB`);
         await processVideosData(result.data as DatabaseVideo[]);
       } else {
-        console.log('📭 No videos found in database');
+        addDebugInfo('No videos found in DynamoDB');
         setVideos([]);
       }
+      
+      addDebugInfo('=== VIDEO LOAD PROCESS COMPLETE ===');
     } catch (err) {
-      console.error('❌ Error loading videos:', err);
-      setError(`Failed to load videos: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      const errorMessage = `Failed to load videos: ${err instanceof Error ? err.message : 'Unknown error'}`;
+      addDebugInfo(`❌ ${errorMessage}`);
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
-  }, [processVideosData]); // processVideosData is now in dependencies
+  }, [processVideosData, testS3Connection, testDynamoDBConnection]);
 
-  // Load videos on component mount with proper dependencies
-  useEffect(() => {
-    console.log('🚀 VideoManager mounted, loading videos...');
-    loadVideos();
-    
-    // Set up real-time subscription
-    console.log('🔔 Setting up real-time subscription...');
-    const subscription = client.models.Video.observeQuery().subscribe({
-      next: ({ items }) => {
-        console.log('🔔 Real-time update received:', items.length, 'items');
-        if (items && items.length > 0) {
-          processVideosData(items as DatabaseVideo[]);
-        }
-      },
-      error: (err) => {
-        console.error('🔔 Subscription error:', err);
-        setError('Failed to sync with database');
-      }
-    });
-
-    return () => {
-      console.log('🔌 Unsubscribing from real-time updates');
-      subscription.unsubscribe();
-    };
-  }, [loadVideos, processVideosData]); // Now includes all dependencies
-
-  const filteredVideos = videos.filter(video =>
-    video.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    video.description.toLowerCase().includes(searchTerm.toLowerCase())
-  );
-
-  // Pagination logic
-  const totalPages = Math.ceil(filteredVideos.length / videosPerPage);
-  const startIndex = (currentPage - 1) * videosPerPage;
-  const endIndex = startIndex + videosPerPage;
-  const currentVideos = filteredVideos.slice(startIndex, endIndex);
-
+  // CRUD Operations
   const handleEditStart = (video: VideoItem) => {
+    console.log('🖊️ Starting edit for video:', video.title);
     setEditingId(video.id);
     setEditTitle(video.title);
     setEditDescription(video.description);
@@ -225,44 +260,62 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
   };
 
   const handleEditSave = async (id: string) => {
+    if (!editTitle.trim()) {
+      alert('Title cannot be empty');
+      return;
+    }
+
+    setSaving(true);
     try {
-      console.log('Updating video:', id);
+      console.log('💾 Saving video updates:', id);
+      addDebugInfo(`Updating video ${id} with new data`);
       
-      await client.models.Video.update({
+      const updateResult = await client.models.Video.update({
         id,
-        title: editTitle,
-        description: editDescription,
+        title: editTitle.trim(),
+        description: editDescription.trim() || undefined,
         language: editLanguage,
         quality: editQuality
       });
 
-      console.log('Video updated successfully');
-      
-      // Update local state
-      setVideos(videos.map(video =>
-        video.id === id ? { 
-          ...video, 
-          title: editTitle,
-          description: editDescription,
-          language: editLanguage,
-          quality: editQuality
-        } : video
-      ));
+      if (updateResult.errors && updateResult.errors.length > 0) {
+        throw new Error(updateResult.errors[0].message);
+      }
+
+      console.log('✅ Video updated successfully:', updateResult);
+      addDebugInfo(`✅ Video ${id} updated successfully`);
+
+      // Update local state immediately
+      setVideos(prevVideos =>
+        prevVideos.map(video =>
+          video.id === id
+            ? {
+                ...video,
+                title: editTitle.trim(),
+                description: editDescription.trim() || 'No description',
+                language: editLanguage,
+                quality: editQuality
+              }
+            : video
+        )
+      );
 
       // Clear editing state
-      setEditingId(null);
-      setEditTitle("");
-      setEditDescription("");
-      setEditLanguage("");
-      setEditQuality("");
+      handleEditCancel();
       
+      alert('Video updated successfully!');
+
     } catch (error) {
-      console.error('Error updating video:', error);
-      alert('Failed to update video. Please try again.');
+      console.error('❌ Error updating video:', error);
+      addDebugInfo(`❌ Failed to update video ${id}: ${error}`);
+      alert(`Failed to update video: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setSaving(false);
     }
   };
 
   const handleEditCancel = () => {
+    console.log('❌ Canceling edit');
     setEditingId(null);
     setEditTitle("");
     setEditDescription("");
@@ -270,83 +323,108 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
     setEditQuality("");
   };
 
-  const handleDelete = async (id: string) => {
-    if (!window.confirm("Are you sure you want to delete this video? This will remove it from S3 and the database.")) {
-      return;
+  const handleViewVideo = (video: VideoItem) => {
+    console.log('🎥 Opening video viewer for:', video.title);
+    addDebugInfo(`Opening video viewer for: ${video.title}`);
+    onViewVideo(video);
+  };
+
+  // Manual create test video
+  const createTestVideo = async () => {
+    try {
+      addDebugInfo('Creating test video in DynamoDB...');
+      
+      const testVideo = await client.models.Video.create({
+        title: 'Test Video',
+        description: 'This is a test video created for debugging',
+        s3Key: 'videos/test-video.mp4',
+        language: 'english',
+        quality: 'high',
+        transcription: 'This is a test transcription',
+        duration: 120,
+        fileSize: 1024 * 1024 * 50, // 50MB
+        mimeType: 'video/mp4',
+        uploadedAt: new Date().toISOString(),
+        status: 'completed'
+      });
+      
+      addDebugInfo(`✅ Test video created: ${testVideo.data?.id}`);
+      loadVideos(); // Reload to see the new video
+    } catch (error) {
+      addDebugInfo(`❌ Failed to create test video: ${error}`);
     }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm("Are you sure you want to delete this video?")) return;
 
     try {
       const video = videos.find(v => v.id === id);
       if (!video) return;
 
-      console.log('Deleting video:', id, video.s3Key);
+      console.log('🗑️ Deleting video:', video.title);
+      addDebugInfo(`Deleting video: ${video.title}`);
 
-      // Delete from S3
+      // Delete from S3 (optional - file might not exist)
       try {
         await remove({ path: video.s3Key });
-        console.log('S3 file deleted');
+        addDebugInfo(`✅ S3 file deleted: ${video.s3Key}`);
       } catch (s3Error) {
-        console.warn('S3 deletion failed (file may not exist):', s3Error);
+        console.warn('⚠️ S3 deletion failed (file may not exist):', s3Error);
+        addDebugInfo(`⚠️ S3 deletion failed: ${s3Error}`);
       }
 
       // Delete from DynamoDB
       await client.models.Video.delete({ id });
-      console.log('Database record deleted');
+      addDebugInfo(`✅ Database record deleted: ${id}`);
 
       // Update local state
       setVideos(videos.filter(video => video.id !== id));
       setSelectedVideos(selectedVideos.filter(selectedId => selectedId !== id));
 
-      // Adjust current page if necessary
-      const newFilteredVideos = videos.filter(video => video.id !== id);
-      const newTotalPages = Math.ceil(newFilteredVideos.length / videosPerPage);
-      if (currentPage > newTotalPages && newTotalPages > 0) {
-        setCurrentPage(newTotalPages);
-      }
+      console.log('✅ Video deleted successfully');
+      alert('Video deleted successfully!');
 
     } catch (error) {
-      console.error('Error deleting video:', error);
+      console.error('❌ Error deleting video:', error);
+      addDebugInfo(`❌ Failed to delete video: ${error}`);
       alert('Failed to delete video. Please try again.');
     }
   };
 
-  const handleBulkDelete = async () => {
-    if (selectedVideos.length === 0) return;
+  useEffect(() => {
+    addDebugInfo('VideoManager component mounted');
+    loadVideos();
     
-    if (!window.confirm(`Delete ${selectedVideos.length} selected videos? This will remove them from S3 and the database.`)) {
-      return;
-    }
-
-    try {
-      console.log('Bulk deleting videos:', selectedVideos);
-
-      // Delete each video
-      await Promise.all(selectedVideos.map(async (videoId) => {
-        const video = videos.find(v => v.id === videoId);
-        if (!video) return;
-
-        // Delete from S3
-        try {
-          await remove({ path: video.s3Key });
-        } catch (s3Error) {
-          console.warn(`S3 deletion failed for ${video.s3Key}:`, s3Error);
+    // Set up real-time subscription
+    const subscription = client.models.Video.observeQuery().subscribe({
+      next: ({ items }) => {
+        addDebugInfo(`🔔 Real-time update: ${items.length} items`);
+        if (items && items.length >= 0) {
+          processVideosData(items as DatabaseVideo[]);
         }
+      },
+      error: (err) => {
+        addDebugInfo(`🔔 Subscription error: ${err}`);
+        setError('Real-time sync failed');
+      }
+    });
 
-        // Delete from DynamoDB
-        await client.models.Video.delete({ id: videoId });
-      }));
+    return () => {
+      addDebugInfo('Unsubscribing from real-time updates');
+      subscription.unsubscribe();
+    };
+  }, [loadVideos, processVideosData]);
 
-      // Update local state
-      setVideos(videos.filter(video => !selectedVideos.includes(video.id)));
-      setSelectedVideos([]);
+  const filteredVideos = videos.filter(video =>
+    video.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    video.description.toLowerCase().includes(searchTerm.toLowerCase())
+  );
 
-      console.log('Bulk deletion completed');
-
-    } catch (error) {
-      console.error('Error during bulk deletion:', error);
-      alert('Some videos failed to delete. Please try again.');
-    }
-  };
+  const totalPages = Math.ceil(filteredVideos.length / videosPerPage);
+  const startIndex = (currentPage - 1) * videosPerPage;
+  const endIndex = startIndex + videosPerPage;
+  const currentVideos = filteredVideos.slice(startIndex, endIndex);
 
   const toggleSelectVideo = (id: string) => {
     setSelectedVideos(prev =>
@@ -360,6 +438,47 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
 
   const deselectAllVideos = () => {
     setSelectedVideos([]);
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedVideos.length === 0) return;
+    if (!window.confirm(`Delete ${selectedVideos.length} selected videos? This will remove them from S3 and the database.`)) return;
+
+    try {
+      console.log('🗑️ Bulk deleting videos:', selectedVideos);
+      addDebugInfo(`Starting bulk delete of ${selectedVideos.length} videos`);
+
+      await Promise.all(selectedVideos.map(async (videoId) => {
+        const video = videos.find(v => v.id === videoId);
+        if (!video) return;
+
+        // Delete from S3 (optional - file might not exist)
+        try {
+          await remove({ path: video.s3Key });
+          addDebugInfo(`✅ S3 file deleted: ${video.s3Key}`);
+        } catch (s3Error) {
+          console.warn(`⚠️ S3 deletion failed for ${video.s3Key}:`, s3Error);
+          addDebugInfo(`⚠️ S3 deletion failed: ${s3Error}`);
+        }
+
+        // Delete from DynamoDB
+        await client.models.Video.delete({ id: videoId });
+        addDebugInfo(`✅ Database record deleted: ${videoId}`);
+      }));
+
+      // Update local state
+      setVideos(videos.filter(video => !selectedVideos.includes(video.id)));
+      setSelectedVideos([]);
+
+      console.log('✅ Bulk deletion completed');
+      addDebugInfo(`✅ Bulk deletion completed: ${selectedVideos.length} videos deleted`);
+      alert(`Successfully deleted ${selectedVideos.length} videos!`);
+
+    } catch (error) {
+      console.error('❌ Error during bulk deletion:', error);
+      addDebugInfo(`❌ Bulk deletion failed: ${error}`);
+      alert('Some videos failed to delete. Please try again.');
+    }
   };
 
   const goToPage = (page: number) => {
@@ -389,11 +508,17 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
         <main className="manager-content">
           <div className="loading-state">
             <div className="loading-icon">⏳</div>
-            <h3>Loading videos from S3...</h3>
-            <p>Connecting to DynamoDB and generating signed URLs...</p>
-            <button className="action-btn secondary" onClick={loadVideos}>
-              Retry Loading
-            </button>
+            <h3>Loading videos...</h3>
+            <p>Running diagnostics...</p>
+            
+            <div className="debug-info">
+              <h4>Debug Log:</h4>
+              <div className="debug-messages">
+                {debugInfo.map((message, index) => (
+                  <div key={index} className="debug-message">{message}</div>
+                ))}
+              </div>
+            </div>
           </div>
         </main>
       </div>
@@ -413,9 +538,22 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
             <div className="error-icon">❌</div>
             <h3>Error loading videos</h3>
             <p>{error}</p>
+            
+            <div className="debug-info">
+              <h4>Debug Log:</h4>
+              <div className="debug-messages">
+                {debugInfo.map((message, index) => (
+                  <div key={index} className="debug-message">{message}</div>
+                ))}
+              </div>
+            </div>
+            
             <div className="error-actions">
               <button className="action-btn primary" onClick={loadVideos}>
                 Retry
+              </button>
+              <button className="action-btn secondary" onClick={createTestVideo}>
+                Create Test Video
               </button>
               <button className="action-btn secondary" onClick={() => {
                 setError(null);
@@ -448,10 +586,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
           <div className="manager-title">
             <h2>Video Library</h2>
             <span className="video-count">
-              {filteredVideos.length} videos total 
-              {videos.length > 0 && (
-                <span className="sync-status">🔄 Synced with S3+DB</span>
-              )}
+              {filteredVideos.length} videos found
             </span>
           </div>
           
@@ -473,24 +608,56 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
           </div>
         </div>
 
+        {/* Debug Panel */}
+        <div className="debug-panel">
+          <details>
+            <summary>🔧 Debug Information ({debugInfo.length} messages)</summary>
+            <div className="debug-info">
+              <div className="debug-actions">
+                <button className="debug-btn" onClick={loadVideos}>Reload Videos</button>
+                <button className="debug-btn" onClick={createTestVideo}>Create Test Video</button>
+                <button className="debug-btn" onClick={() => setDebugInfo([])}>Clear Log</button>
+              </div>
+              <div className="debug-messages">
+                {debugInfo.map((message, index) => (
+                  <div key={index} className="debug-message">{message}</div>
+                ))}
+              </div>
+            </div>
+          </details>
+        </div>
+
+        {/* Bulk Actions */}
         {selectedVideos.length > 0 && (
           <div className="bulk-actions">
             <span className="selection-count">{selectedVideos.length} videos selected</span>
             <div className="bulk-buttons">
-              <button className="bulk-btn secondary" onClick={deselectAllVideos}>Deselect All</button>
-              <button className="bulk-btn danger" onClick={handleBulkDelete}>Delete Selected</button>
+              <button className="bulk-btn secondary" onClick={deselectAllVideos}>
+                Deselect All
+              </button>
+              <button className="bulk-btn danger" onClick={handleBulkDelete}>
+                Delete Selected ({selectedVideos.length})
+              </button>
             </div>
           </div>
         )}
 
+        {/* Manager Controls */}
         <div className="manager-controls">
           <div className="select-actions">
-            <button className="control-btn purple" onClick={selectAllVideos}>Select All on Page</button>
-            <button className="control-btn purple" onClick={deselectAllVideos}>Deselect All</button>
+            <button className="control-btn purple" onClick={selectAllVideos}>
+              Select All on Page ({currentVideos.length})
+            </button>
+            <button className="control-btn purple" onClick={deselectAllVideos}>
+              Deselect All
+            </button>
           </div>
           
           <div className="pagination-info">
-            <span>Page {currentPage} of {totalPages} | Showing {currentVideos.length} of {filteredVideos.length} videos</span>
+            <span>
+              Page {currentPage} of {totalPages} | 
+              Showing {currentVideos.length} of {filteredVideos.length} videos
+            </span>
           </div>
         </div>
 
@@ -507,7 +674,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
                   />
                 </div>
 
-                <div className="video-thumbnail-small" onClick={() => onViewVideo(video)}>
+                <div className="video-thumbnail-small" onClick={() => handleViewVideo(video)}>
                   <img src={video.thumbnail} alt={video.title} />
                   <div className="play-overlay-small">
                     <div className="play-button-small">▶</div>
@@ -518,35 +685,42 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
 
                 <div className="video-details">
                   {editingId === video.id ? (
+                    // EDIT MODE
                     <div className="edit-form-inline">
-                      <div className="edit-row-inline">
-                        <div className="edit-field-inline">
+                      <div className="edit-row">
+                        <div className="edit-field">
                           <label>Title:</label>
                           <input
                             type="text"
                             value={editTitle}
                             onChange={(e) => setEditTitle(e.target.value)}
-                            className="edit-input-inline"
+                            className="edit-input"
+                            disabled={saving}
+                            placeholder="Enter video title"
                           />
                         </div>
-                        <div className="edit-field-inline">
+                        <div className="edit-field">
                           <label>Language:</label>
                           <select
                             value={editLanguage}
                             onChange={(e) => setEditLanguage(e.target.value)}
-                            className="edit-select-inline"
+                            className="edit-select"
+                            disabled={saving}
                           >
                             {languages.map(lang => (
-                              <option key={lang.value} value={lang.value}>{lang.label}</option>
+                              <option key={lang.value} value={lang.value}>
+                                {lang.label}
+                              </option>
                             ))}
                           </select>
                         </div>
-                        <div className="edit-field-inline">
+                        <div className="edit-field">
                           <label>Quality:</label>
                           <select
                             value={editQuality}
                             onChange={(e) => setEditQuality(e.target.value)}
-                            className="edit-select-inline"
+                            className="edit-select"
+                            disabled={saving}
                           >
                             <option value="low">Low</option>
                             <option value="medium">Medium</option>
@@ -554,27 +728,38 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
                           </select>
                         </div>
                       </div>
-                      <div className="edit-field-inline">
+                      <div className="edit-field">
                         <label>Description:</label>
                         <textarea
                           value={editDescription}
                           onChange={(e) => setEditDescription(e.target.value)}
-                          className="edit-textarea-inline"
+                          className="edit-textarea"
+                          disabled={saving}
+                          placeholder="Enter video description"
                           rows={2}
                         />
                       </div>
-                      <div className="edit-buttons-inline">
-                        <button className="save-btn-inline" onClick={() => handleEditSave(video.id)}>
-                          Save to DB
+                      <div className="edit-buttons">
+                        <button 
+                          className="save-btn" 
+                          onClick={() => handleEditSave(video.id)}
+                          disabled={saving || !editTitle.trim()}
+                        >
+                          {saving ? '💾 Saving...' : '💾 Save'}
                         </button>
-                        <button className="cancel-btn-inline" onClick={handleEditCancel}>
-                          Cancel
+                        <button 
+                          className="cancel-btn" 
+                          onClick={handleEditCancel}
+                          disabled={saving}
+                        >
+                          ❌ Cancel
                         </button>
                       </div>
                     </div>
                   ) : (
+                    // VIEW MODE
                     <>
-                      <h3 className="video-title-row" onClick={() => onViewVideo(video)}>
+                      <h3 className="video-title-row" onClick={() => handleViewVideo(video)}>
                         {video.title}
                         {video.status === 'processing' && <span className="status-badge processing">Processing</span>}
                         {video.status === 'failed' && <span className="status-badge failed">Failed</span>}
@@ -592,20 +777,31 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
                 </div>
 
                 <div className="video-actions-row">
-                  <button 
-                    className="action-icon-large"
-                    onClick={() => handleEditStart(video)}
-                    title="Edit video metadata"
-                  >
-                    ✏️ Edit
-                  </button>
-                  <button 
-                    className="action-icon-large danger"
-                    onClick={() => handleDelete(video.id)}
-                    title="Delete from S3 + DB"
-                  >
-                    🗑️ Delete
-                  </button>
+                  {editingId !== video.id && (
+                    <>
+                      <button 
+                        className="action-icon-large edit"
+                        onClick={() => handleEditStart(video)}
+                        title="Edit video metadata"
+                      >
+                        ✏️ Edit
+                      </button>
+                      <button 
+                        className="action-icon-large view"
+                        onClick={() => handleViewVideo(video)}
+                        title="View video"
+                      >
+                        👁️ View
+                      </button>
+                      <button 
+                        className="action-icon-large danger"
+                        onClick={() => handleDelete(video.id)}
+                        title="Delete video"
+                      >
+                        🗑️ Delete
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -619,20 +815,21 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
             <p>
               {searchTerm 
                 ? "Try adjusting your search terms" 
-                : "Upload your first video to S3 to get started"
+                : "Upload your first video or create a test video"
               }
             </p>
             <div className="empty-actions">
               <button className="action-btn primary" onClick={onUploadNew}>
-                Upload Video to S3
+                Upload Video
               </button>
-              <button className="action-btn secondary" onClick={loadVideos}>
-                Refresh List
+              <button className="action-btn secondary" onClick={createTestVideo}>
+                Create Test Video
               </button>
             </div>
           </div>
         )}
 
+        {/* Pagination */}
         {totalPages > 1 && (
           <div className="pagination">
             <button 
@@ -644,15 +841,40 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
             </button>
             
             <div className="pagination-numbers">
-              {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
-                <button
-                  key={page}
-                  className={`pagination-number ${currentPage === page ? 'active' : ''}`}
-                  onClick={() => goToPage(page)}
-                >
-                  {page}
-                </button>
-              ))}
+              {Array.from({ length: Math.min(totalPages, 10) }, (_, i) => {
+                let page;
+                if (totalPages <= 10) {
+                  page = i + 1;
+                } else {
+                  // Show pages around current page
+                  const start = Math.max(1, currentPage - 4);
+                  const end = Math.min(totalPages, start + 9);
+                  page = start + i;
+                  if (page > end) return null;
+                }
+                
+                return (
+                  <button
+                    key={page}
+                    className={`pagination-number ${currentPage === page ? 'active' : ''}`}
+                    onClick={() => goToPage(page)}
+                  >
+                    {page}
+                  </button>
+                );
+              }).filter(Boolean)}
+              
+              {totalPages > 10 && currentPage < totalPages - 5 && (
+                <>
+                  <span className="pagination-ellipsis">...</span>
+                  <button
+                    className="pagination-number"
+                    onClick={() => goToPage(totalPages)}
+                  >
+                    {totalPages}
+                  </button>
+                </>
+              )}
             </div>
             
             <button 
@@ -671,7 +893,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
           ← Back to Home
         </button>
         <div className="storage-info">
-          <span>S3 Bucket: file-uploader-demo-rodes-01 | Page {currentPage} of {totalPages}</span>
+          <span>S3 Bucket: file-uploader-demo-rodes-01 | Debug: {debugInfo.length} logs</span>
         </div>
       </div>
     </div>
