@@ -11,7 +11,7 @@ export const backend = defineBackend({
   storage,
 });
 
-// ✅ Agregar permisos de AWS Transcribe
+// ✅ Agregar permisos de AWS Transcribe de forma más simple
 backend.auth.resources.authenticatedUserIamRole.addToPrincipalPolicy(
   new PolicyStatement({
     actions: [
@@ -23,28 +23,19 @@ backend.auth.resources.authenticatedUserIamRole.addToPrincipalPolicy(
   })
 );
 
-// ✅ Agregar permisos adicionales de S3 para transcripciones
+// ✅ Agregar permisos básicos de S3 sin referencias circulares
 backend.auth.resources.authenticatedUserIamRole.addToPrincipalPolicy(
   new PolicyStatement({
     actions: [
       's3:GetObject',
       's3:PutObject',
       's3:PutObjectAcl',
-    ],
-    resources: [
-      `${backend.storage.resources.bucket.bucketArn}/*`,
-      `${backend.storage.resources.bucket.bucketArn}/transcriptions/*`,
-    ],
-  })
-);
-
-// ✅ Opcional: Agregar permisos para acceso completo al bucket
-backend.auth.resources.authenticatedUserIamRole.addToPrincipalPolicy(
-  new PolicyStatement({
-    actions: [
       's3:ListBucket',
       's3:GetBucketLocation',
     ],
-    resources: [backend.storage.resources.bucket.bucketArn],
+    resources: [
+      'arn:aws:s3:::*', // Todos los buckets
+      'arn:aws:s3:::*/*', // Todos los objetos
+    ],
   })
 );
