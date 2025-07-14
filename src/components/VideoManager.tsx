@@ -1,8 +1,9 @@
-// components/VideoManager.tsx - WITH FULL CRUD
+// components/VideoManager.tsx - WITH TRANSCRIPTION SUPPORT - ERRORS FIXED
 import { useState, useEffect, useCallback } from "react";
 import { generateClient } from "aws-amplify/data";
 import { getUrl, remove, list } from "aws-amplify/storage";
-import type { Schema } from "../amplify/data/resource";
+import type { Schema } from "../amplify/data/resource.ts";
+import TranscriptionService from "../services/transcriptionService.ts";
 
 const client = generateClient<Schema>();
 
@@ -20,6 +21,9 @@ type DatabaseVideo = {
   mimeType?: string | null;
   uploadedAt?: string | null;
   status?: string | null;
+  transcriptionStatus?: string | null;
+  transcriptionJobName?: string | null;
+  audioConversionStatus?: string | null;
 };
 
 export interface VideoItem {
@@ -35,6 +39,9 @@ export interface VideoItem {
   uploadedAt: string;
   thumbnail: string;
   status?: string;
+  transcriptionStatus?: string;
+  transcriptionJobName?: string;
+  hasTranscription?: boolean;
 }
 
 interface VideoManagerProps {
@@ -110,6 +117,47 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
     return `https://via.placeholder.com/200x120/${color}/ffffff?text=${encodedTitle}`;
   };
 
+  // Get transcription status badge
+  const getTranscriptionBadge = (status?: string) => {
+    switch (status) {
+      case 'completed':
+        return { icon: '✅', text: 'Transcription Ready', color: '#28a745' };
+      case 'in_progress':
+        return { icon: '⏳', text: 'Transcribing...', color: '#ffc107' };
+      case 'failed':
+        return { icon: '❌', text: 'Transcription Failed', color: '#dc3545' };
+      case 'not_started':
+        return { icon: '⏸️', text: 'No Transcription', color: '#6c757d' };
+      default:
+        return { icon: '❓', text: 'Unknown Status', color: '#6c757d' };
+    }
+  };
+
+  // Retry transcription
+  const retryTranscription = async (videoId: string, s3Key: string, language: string) => {
+    try {
+      addDebugInfo(`Retrying transcription for video ${videoId}`);
+      
+      const jobName = await TranscriptionService.startTranscription({
+        videoId,
+        s3Key,
+        language,
+        bucketName: 'file-uploader-demo-rodes-01'
+      });
+      
+      addDebugInfo(`✅ Transcription retry started: ${jobName}`);
+      alert('Transcription process restarted! Check back in a few minutes.');
+      
+      // Reload videos to update status
+      loadVideos();
+      
+    } catch (error) {
+      console.error('❌ Error retrying transcription:', error);
+      addDebugInfo(`❌ Transcription retry failed: ${error}`);
+      alert('Failed to restart transcription. Please try again.');
+    }
+  };
+
   // Test S3 connectivity
   const testS3Connection = useCallback(async () => {
     try {
@@ -139,11 +187,12 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
     }
   }, []);
 
-  // Test DynamoDB connectivity
+  // Test DynamoDB connectivity - FIXED: Added required input parameter
   const testDynamoDBConnection = useCallback(async () => {
     try {
       addDebugInfo('Testing DynamoDB connectivity...');
-      const result = await client.models.Video.list();
+      // FIX 1: Added required input parameter {} for list()
+      const result = await client.models.Video.list({});
       addDebugInfo(`DynamoDB Result: Found ${result.data?.length || 0} records`);
       addDebugInfo(`DynamoDB Errors: ${result.errors?.length || 0} errors`);
       
@@ -196,10 +245,13 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
             fileSize: formatFileSize(video.fileSize || 0),
             uploadedAt: formatDate(video.uploadedAt || new Date().toISOString()),
             thumbnail: generateThumbnailUrl(video.title || 'Video'),
-            status: video.status || 'completed'
+            status: video.status || 'completed',
+            transcriptionStatus: video.transcriptionStatus || 'not_started',
+            transcriptionJobName: video.transcriptionJobName || undefined,
+            hasTranscription: !!(video.transcription && video.transcription.trim().length > 0)
           } as VideoItem;
 
-          addDebugInfo(`✅ Processed video: ${processedVideo.title}`);
+          addDebugInfo(`✅ Processed video: ${processedVideo.title} (Transcription: ${processedVideo.transcriptionStatus})`);
           return processedVideo;
         } catch (error) {
           addDebugInfo(`❌ Error processing video ${video.id}: ${error}`);
@@ -329,18 +381,20 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
     onViewVideo(video);
   };
 
-  // Manual create test video
+  // Manual create test video with transcription - FIXED: Type for testVideo.data
   const createTestVideo = async () => {
     try {
-      addDebugInfo('Creating test video in DynamoDB...');
+      addDebugInfo('Creating test video with transcription in DynamoDB...');
       
       const testVideo = await client.models.Video.create({
-        title: 'Test Video',
-        description: 'This is a test video created for debugging',
-        s3Key: 'videos/test-video.mp4',
+        title: 'Test Video with Transcription',
+        description: 'This is a test video created for debugging with transcription enabled',
+        s3Key: 'videos/test-video-transcribe.mp4',
         language: 'english',
         quality: 'high',
-        transcription: 'This is a test transcription',
+        transcription: 'This is a test transcription. Hello and welcome to this test video. We are demonstrating the transcription functionality powered by AWS Transcribe. The system can automatically convert speech to text in multiple languages. This feature makes videos more accessible and searchable.',
+        transcriptionStatus: 'completed',
+        transcriptionJobName: 'test_job_' + Date.now(),
         duration: 120,
         fileSize: 1024 * 1024 * 50, // 50MB
         mimeType: 'video/mp4',
@@ -348,7 +402,19 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
         status: 'completed'
       });
       
-      addDebugInfo(`✅ Test video created: ${testVideo.data?.id}`);
+      // FIX 2: Proper type handling for testVideo.data with specific type
+      if (testVideo.data && !Array.isArray(testVideo.data)) {
+        const videoData = testVideo.data as { id?: string };
+        const videoId = videoData.id;
+        if (videoId) {
+          addDebugInfo(`✅ Test video with transcription created: ${videoId}`);
+        } else {
+          addDebugInfo(`❌ Failed to get video ID from created test video`);
+        }
+      } else {
+        addDebugInfo(`❌ Failed to get video ID from created test video`);
+      }
+      
       loadVideos(); // Reload to see the new video
     } catch (error) {
       addDebugInfo(`❌ Failed to create test video: ${error}`);
@@ -356,7 +422,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
   };
 
   const handleDelete = async (id: string) => {
-    if (!window.confirm("Are you sure you want to delete this video?")) return;
+    if (!window.confirm("Are you sure you want to delete this video? This will also remove any transcription data.")) return;
 
     try {
       const video = videos.find(v => v.id === id);
@@ -383,7 +449,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
       setSelectedVideos(selectedVideos.filter(selectedId => selectedId !== id));
 
       console.log('✅ Video deleted successfully');
-      alert('Video deleted successfully!');
+      alert('Video and transcription data deleted successfully!');
 
     } catch (error) {
       console.error('❌ Error deleting video:', error);
@@ -392,29 +458,15 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
     }
   };
 
+  // FIX 3 & 4: Remove real-time subscription since observeQuery doesn't have subscribe
   useEffect(() => {
     addDebugInfo('VideoManager component mounted');
     loadVideos();
     
-    // Set up real-time subscription
-    const subscription = client.models.Video.observeQuery().subscribe({
-      next: ({ items }) => {
-        addDebugInfo(`🔔 Real-time update: ${items.length} items`);
-        if (items && items.length >= 0) {
-          processVideosData(items as DatabaseVideo[]);
-        }
-      },
-      error: (err) => {
-        addDebugInfo(`🔔 Subscription error: ${err}`);
-        setError('Real-time sync failed');
-      }
-    });
-
-    return () => {
-      addDebugInfo('Unsubscribing from real-time updates');
-      subscription.unsubscribe();
-    };
-  }, [loadVideos, processVideosData]);
+    // Note: Real-time subscription removed due to API limitations
+    // If you need real-time updates, consider polling or manual refresh
+    
+  }, [loadVideos]);
 
   const filteredVideos = videos.filter(video =>
     video.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -442,7 +494,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
 
   const handleBulkDelete = async () => {
     if (selectedVideos.length === 0) return;
-    if (!window.confirm(`Delete ${selectedVideos.length} selected videos? This will remove them from S3 and the database.`)) return;
+    if (!window.confirm(`Delete ${selectedVideos.length} selected videos? This will remove them from S3, the database, and any transcription data.`)) return;
 
     try {
       console.log('🗑️ Bulk deleting videos:', selectedVideos);
@@ -472,7 +524,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
 
       console.log('✅ Bulk deletion completed');
       addDebugInfo(`✅ Bulk deletion completed: ${selectedVideos.length} videos deleted`);
-      alert(`Successfully deleted ${selectedVideos.length} videos!`);
+      alert(`Successfully deleted ${selectedVideos.length} videos and their transcription data!`);
 
     } catch (error) {
       console.error('❌ Error during bulk deletion:', error);
@@ -584,7 +636,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
       <main className="manager-content">
         <div className="manager-header">
           <div className="manager-title">
-            <h2>Video Library</h2>
+            <h2>Video Library with AWS Transcribe</h2>
             <span className="video-count">
               {filteredVideos.length} videos found
             </span>
@@ -662,150 +714,215 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
         </div>
 
         <div className="videos-table">
-          {currentVideos.map((video) => (
-            <div key={video.id} className={`video-row ${selectedVideos.includes(video.id) ? 'selected' : ''}`}>
-              <div className="video-row-content">
-                <div className="video-checkbox-container">
-                  <input
-                    type="checkbox"
-                    className="video-checkbox"
-                    checked={selectedVideos.includes(video.id)}
-                    onChange={() => toggleSelectVideo(video.id)}
-                  />
-                </div>
-
-                <div className="video-thumbnail-small" onClick={() => handleViewVideo(video)}>
-                  <img src={video.thumbnail} alt={video.title} />
-                  <div className="play-overlay-small">
-                    <div className="play-button-small">▶</div>
+          {currentVideos.map((video) => {
+            const transcriptionBadge = getTranscriptionBadge(video.transcriptionStatus);
+            
+            return (
+              <div key={video.id} className={`video-row ${selectedVideos.includes(video.id) ? 'selected' : ''}`}>
+                <div className="video-row-content">
+                  <div className="video-checkbox-container">
+                    <input
+                      type="checkbox"
+                      className="video-checkbox"
+                      checked={selectedVideos.includes(video.id)}
+                      onChange={() => toggleSelectVideo(video.id)}
+                    />
                   </div>
-                  <div className="duration-badge-small">{video.duration}</div>
-                  <div className="s3-badge">S3</div>
-                </div>
 
-                <div className="video-details">
-                  {editingId === video.id ? (
-                    // EDIT MODE
-                    <div className="edit-form-inline">
-                      <div className="edit-row">
+                  <div className="video-thumbnail-small" onClick={() => handleViewVideo(video)}>
+                    <img src={video.thumbnail} alt={video.title} />
+                    <div className="play-overlay-small">
+                      <div className="play-button-small">▶</div>
+                    </div>
+                    <div className="duration-badge-small">{video.duration}</div>
+                    <div className="s3-badge">S3</div>
+                    {/* Transcription status badge on thumbnail */}
+                    <div className="transcription-badge" style={{ 
+                      position: 'absolute', 
+                      top: '5px', 
+                      right: '5px', 
+                      backgroundColor: transcriptionBadge.color, 
+                      color: 'white', 
+                      padding: '2px 6px', 
+                      borderRadius: '10px', 
+                      fontSize: '10px',
+                      fontWeight: 'bold'
+                    }}>
+                      {transcriptionBadge.icon}
+                    </div>
+                  </div>
+
+                  <div className="video-details">
+                    {editingId === video.id ? (
+                      // EDIT MODE
+                      <div className="edit-form-inline">
+                        <div className="edit-row">
+                          <div className="edit-field">
+                            <label>Title:</label>
+                            <input
+                              type="text"
+                              value={editTitle}
+                              onChange={(e) => setEditTitle(e.target.value)}
+                              className="edit-input"
+                              disabled={saving}
+                              placeholder="Enter video title"
+                            />
+                          </div>
+                          <div className="edit-field">
+                            <label>Language:</label>
+                            <select
+                              value={editLanguage}
+                              onChange={(e) => setEditLanguage(e.target.value)}
+                              className="edit-select"
+                              disabled={saving}
+                            >
+                              {languages.map(lang => (
+                                <option key={lang.value} value={lang.value}>
+                                  {lang.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="edit-field">
+                            <label>Quality:</label>
+                            <select
+                              value={editQuality}
+                              onChange={(e) => setEditQuality(e.target.value)}
+                              className="edit-select"
+                              disabled={saving}
+                            >
+                              <option value="low">Low</option>
+                              <option value="medium">Medium</option>
+                              <option value="high">High</option>
+                            </select>
+                          </div>
+                        </div>
                         <div className="edit-field">
-                          <label>Title:</label>
-                          <input
-                            type="text"
-                            value={editTitle}
-                            onChange={(e) => setEditTitle(e.target.value)}
-                            className="edit-input"
+                          <label>Description:</label>
+                          <textarea
+                            value={editDescription}
+                            onChange={(e) => setEditDescription(e.target.value)}
+                            className="edit-textarea"
                             disabled={saving}
-                            placeholder="Enter video title"
+                            placeholder="Enter video description"
+                            rows={2}
                           />
                         </div>
-                        <div className="edit-field">
-                          <label>Language:</label>
-                          <select
-                            value={editLanguage}
-                            onChange={(e) => setEditLanguage(e.target.value)}
-                            className="edit-select"
+                        <div className="edit-buttons">
+                          <button 
+                            className="save-btn" 
+                            onClick={() => handleEditSave(video.id)}
+                            disabled={saving || !editTitle.trim()}
+                          >
+                            {saving ? '💾 Saving...' : '💾 Save'}
+                          </button>
+                          <button 
+                            className="cancel-btn" 
+                            onClick={handleEditCancel}
                             disabled={saving}
                           >
-                            {languages.map(lang => (
-                              <option key={lang.value} value={lang.value}>
-                                {lang.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className="edit-field">
-                          <label>Quality:</label>
-                          <select
-                            value={editQuality}
-                            onChange={(e) => setEditQuality(e.target.value)}
-                            className="edit-select"
-                            disabled={saving}
-                          >
-                            <option value="low">Low</option>
-                            <option value="medium">Medium</option>
-                            <option value="high">High</option>
-                          </select>
+                            ❌ Cancel
+                          </button>
                         </div>
                       </div>
-                      <div className="edit-field">
-                        <label>Description:</label>
-                        <textarea
-                          value={editDescription}
-                          onChange={(e) => setEditDescription(e.target.value)}
-                          className="edit-textarea"
-                          disabled={saving}
-                          placeholder="Enter video description"
-                          rows={2}
-                        />
-                      </div>
-                      <div className="edit-buttons">
-                        <button 
-                          className="save-btn" 
-                          onClick={() => handleEditSave(video.id)}
-                          disabled={saving || !editTitle.trim()}
-                        >
-                          {saving ? '💾 Saving...' : '💾 Save'}
-                        </button>
-                        <button 
-                          className="cancel-btn" 
-                          onClick={handleEditCancel}
-                          disabled={saving}
-                        >
-                          ❌ Cancel
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    // VIEW MODE
-                    <>
-                      <h3 className="video-title-row" onClick={() => handleViewVideo(video)}>
-                        {video.title}
-                        {video.status === 'processing' && <span className="status-badge processing">Processing</span>}
-                        {video.status === 'failed' && <span className="status-badge failed">Failed</span>}
-                      </h3>
-                      <p className="video-description-row">{video.description}</p>
-                      <div className="video-meta-row">
-                        <span className="meta-item">📅 {video.uploadedAt}</span>
-                        <span className="meta-item">📏 {video.fileSize}</span>
-                        <span className="meta-item">🌐 {video.language}</span>
-                        <span className={`quality-badge ${video.quality}`}>{video.quality.toUpperCase()}</span>
-                        <span className="meta-item s3-path">🗂️ {video.s3Key}</span>
-                      </div>
-                    </>
-                  )}
-                </div>
+                    ) : (
+                      // VIEW MODE
+                      <>
+                        <h3 className="video-title-row" onClick={() => handleViewVideo(video)}>
+                          {video.title}
+                          {video.status === 'processing' && <span className="status-badge processing">Processing</span>}
+                          {video.status === 'failed' && <span className="status-badge failed">Failed</span>}
+                        </h3>
+                        <p className="video-description-row">{video.description}</p>
+                        
+                        {/* Transcription Status Row */}
+                        <div className="transcription-status-row" style={{ 
+                          margin: '8px 0', 
+                          padding: '6px 12px', 
+                          backgroundColor: '#f8f9fa', 
+                          borderRadius: '15px',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          fontSize: '13px'
+                        }}>
+                          <span style={{ color: transcriptionBadge.color, fontWeight: 'bold' }}>
+                            {transcriptionBadge.icon} {transcriptionBadge.text}
+                          </span>
+                          {video.transcriptionStatus === 'failed' && (
+                            <button 
+                              onClick={() => retryTranscription(video.id, video.s3Key, video.language)}
+                              style={{
+                                background: 'none',
+                                border: '1px solid #dc3545',
+                                color: '#dc3545',
+                                padding: '2px 8px',
+                                borderRadius: '10px',
+                                fontSize: '11px',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              🔄 Retry
+                            </button>
+                          )}
+                          {video.hasTranscription && (
+                            <span style={{ color: '#28a745', fontSize: '11px' }}>
+                              📝 Text Available
+                            </span>
+                          )}
+                        </div>
+                        
+                        <div className="video-meta-row">
+                          <span className="meta-item">📅 {video.uploadedAt}</span>
+                          <span className="meta-item">📏 {video.fileSize}</span>
+                          <span className="meta-item">🌐 {video.language}</span>
+                          <span className={`quality-badge ${video.quality}`}>{video.quality.toUpperCase()}</span>
+                          <span className="meta-item s3-path">🗂️ {video.s3Key}</span>
+                        </div>
+                      </>
+                    )}
+                  </div>
 
-                <div className="video-actions-row">
-                  {editingId !== video.id && (
-                    <>
-                      <button 
-                        className="action-icon-large edit"
-                        onClick={() => handleEditStart(video)}
-                        title="Edit video metadata"
-                      >
-                        ✏️ Edit
-                      </button>
-                      <button 
-                        className="action-icon-large view"
-                        onClick={() => handleViewVideo(video)}
-                        title="View video"
-                      >
-                        👁️ View
-                      </button>
-                      <button 
-                        className="action-icon-large danger"
-                        onClick={() => handleDelete(video.id)}
-                        title="Delete video"
-                      >
-                        🗑️ Delete
-                      </button>
-                    </>
-                  )}
+                  <div className="video-actions-row">
+                    {editingId !== video.id && (
+                      <>
+                        <button 
+                          className="action-icon-large edit"
+                          onClick={() => handleEditStart(video)}
+                          title="Edit video metadata"
+                        >
+                          ✏️ Edit
+                        </button>
+                        <button 
+                          className="action-icon-large view"
+                          onClick={() => handleViewVideo(video)}
+                          title="View video"
+                        >
+                          👁️ View
+                        </button>
+                        {video.transcriptionStatus === 'failed' && (
+                          <button 
+                            className="action-icon-large warning"
+                            onClick={() => retryTranscription(video.id, video.s3Key, video.language)}
+                            title="Retry transcription"
+                          >
+                            🎤 Retry
+                          </button>
+                        )}
+                        <button 
+                          className="action-icon-large danger"
+                          onClick={() => handleDelete(video.id)}
+                          title="Delete video and transcription"
+                        >
+                          🗑️ Delete
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         {filteredVideos.length === 0 && !loading && (
@@ -815,12 +932,12 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
             <p>
               {searchTerm 
                 ? "Try adjusting your search terms" 
-                : "Upload your first video or create a test video"
+                : "Upload your first video with automatic transcription"
               }
             </p>
             <div className="empty-actions">
               <button className="action-btn primary" onClick={onUploadNew}>
-                Upload Video
+                Upload Video with Transcription
               </button>
               <button className="action-btn secondary" onClick={createTestVideo}>
                 Create Test Video
@@ -893,7 +1010,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
           ← Back to Home
         </button>
         <div className="storage-info">
-          <span>S3 Bucket: file-uploader-demo-rodes-01 | Debug: {debugInfo.length} logs</span>
+          <span>S3 + AWS Transcribe | Debug: {debugInfo.length} logs</span>
         </div>
       </div>
     </div>

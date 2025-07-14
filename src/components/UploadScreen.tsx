@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { uploadData } from "aws-amplify/storage";
 import { generateClient } from "aws-amplify/data";
-import type { Schema } from "../amplify/data/resource";
+import type { Schema } from "../amplify/data/resource.ts";
 
 const client = generateClient<Schema>();
 
