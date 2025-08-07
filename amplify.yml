@@ -3,14 +3,14 @@ backend:
   phases:
     build:
       commands:
-        - nvm use 20.11.0
+        - nvm use 20
         - npm ci --cache .npm --prefer-offline
         - npx ampx generate
 frontend:
   phases:
     preBuild:
       commands:
-        - nvm use 20.11.0
+        - nvm use 20
         - npm ci --cache .npm --prefer-offline
     build:
       commands:
