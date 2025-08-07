@@ -1,4 +1,4 @@
-// services/transcriptionService.ts
+// services/transcriptionService.ts - FIXED VERSION
 import { generateClient } from 'aws-amplify/data';
 import { 
   TranscribeClient, 
@@ -43,13 +43,13 @@ interface TranscriptionProgress {
   jobName?: string;
 }
 
-// Configuración del cliente AWS Transcribe
+// Configuración del cliente AWS Transcribe - FIXED: Sin process.env
 const transcribeClient = new TranscribeClient({ 
-  region: process.env.REACT_APP_AWS_REGION || 'us-east-1' 
+  region: 'us-east-1' // Región fija
 });
 
 const s3Client = new S3Client({ 
-  region: process.env.REACT_APP_AWS_REGION || 'us-east-1' 
+  region: 'us-east-1' // Región fija
 });
 
 const BUCKET_NAME = 'file-uploader-demo-rodes-01';

@@ -101,56 +101,6 @@ function App() {
     }
   };
 
-  const handleDownload = () => {
-    if (!currentVideo?.transcription) {
-      alert('No transcription available for download.');
-      return;
-    }
-
-    console.log('📥 Downloading transcription for:', currentVideo.title);
-
-    // Create downloadable content
-    let content = currentVideo.transcription;
-    let filename = `transcription-${currentVideo.title}`;
-    let mimeType = 'text/plain';
-
-    // Format content based on export settings
-    if (exportSettings.includeTimestamps) {
-      content = `[${currentVideo.uploadedAt}] ${content}`;
-    }
-
-    if (exportSettings.includePageNumbers) {
-      content = `Page 1\n\n${content}`;
-    }
-
-    // Set file type
-    switch (exportSettings.format) {
-      case 'txt':
-        mimeType = 'text/plain';
-        filename += '.txt';
-        break;
-      case 'pdf':
-        mimeType = 'application/pdf';
-        filename += '.pdf';
-        break;
-      case 'docx':
-        mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-        filename += '.docx';
-        break;
-    }
-
-    // Download file
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
   const handleVideoManager = () => {
     console.log('📂 Opening video manager');
     setCurrentVideo(null);
@@ -169,7 +119,7 @@ function App() {
       s3Url: video.s3Url,
       language: video.language,
       quality: video.quality,
-      transcription: `Auto-generated transcription for "${video.title}"\n\n${video.description}\n\nThis is a demo transcription that would be generated from the actual video content using AI transcription services.`,
+      transcription: video.transcription || `Auto-generated transcription for "${video.title}"\n\n${video.description}\n\nThis is a demo transcription that would be generated from the actual video content using AI transcription services.`,
       duration: parseFloat(video.duration.replace(':', '.')) * 60,
       fileSize: parseInt(video.fileSize.replace(/[^\d]/g, '')) * 1024 * 1024,
       mimeType: 'video/mp4',
@@ -189,6 +139,9 @@ function App() {
 
   console.log(`🔄 App render - Screen: ${currentScreen}, Video: ${currentVideo?.title || 'none'}`);
 
+  // ✅ FIXED: Variable para detectar si estamos en desarrollo (sin process.env)
+  const isDevelopment = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+
   return (
     <div className="app">
       {currentScreen === 'upload' && (
@@ -207,12 +160,12 @@ function App() {
         />
       )}
 
+      {/* ✅ FIXED: Eliminada prop onDownload */}
       {currentScreen === 'viewer' && currentVideo && (
         <VideoViewer 
           videoData={currentVideo}
           onBack={handleBack}
           onExportOptions={handleExportOptions}
-          onDownload={handleDownload}
         />
       )}
 
@@ -232,8 +185,8 @@ function App() {
         />
       )}
 
-      {/* Debug info in development */}
-      {process.env.NODE_ENV === 'development' && (
+      {/* ✅ FIXED: Debug info sin process.env */}
+      {isDevelopment && (
         <div style={{
           position: 'fixed',
           top: 10,
