@@ -3,13 +3,13 @@ backend:
   phases:
     build:
       commands:
-        - npm ci
+        - npm install
         - npx @aws-amplify/backend-cli generate
 frontend:
   phases:
     preBuild:
       commands:
-        - npm ci
+        - npm install
     build:
       commands:
         - npm run build
