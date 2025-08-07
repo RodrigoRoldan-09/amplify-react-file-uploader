@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { uploadData } from "aws-amplify/storage";
 import { generateClient } from "aws-amplify/data";
-import type { Schema } from "../amplify/data/resource.ts";
+import type { Schema } from "../../amplify/data/resource";
 
 const client = generateClient<Schema>();
 
@@ -103,7 +103,7 @@ const UploadScreen: React.FC<UploadScreenProps> = ({
           s3Key: s3Key,
           language: language,
           quality: quality,
-          transcription: `Auto-generated transcription for ${file.name}. This would normally be processed by an AI transcription service like AWS Transcribe.`,
+         // transcription: `Auto-generated transcription for ${file.name}. This would normally be processed by an AI transcription service like AWS Transcribe.`,
           duration: 0,
           fileSize: file.size,
           mimeType: file.type,

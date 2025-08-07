@@ -1,20 +1,19 @@
-// components/VideoViewer.tsx - FIXED FOR S3 AND DYNAMODB - CLEAN VERSION
-import { useState, useRef, useEffect } from "react";
+// components/VideoViewer.tsx - CON TRANSCRIPCIÓN EN TIEMPO REAL - ERRORES CORREGIDOS
+import { useState, useRef, useEffect, useCallback } from "react";
 import { getUrl } from "aws-amplify/storage";
 import { VideoData } from "../App";
+import TranscriptionService from "../../services/transcriptionService";
 
 interface VideoViewerProps {
   videoData: VideoData;
   onBack: () => void;
   onExportOptions: () => void;
-  onDownload: () => void;
 }
 
 const VideoViewer: React.FC<VideoViewerProps> = ({ 
   videoData, 
   onBack, 
-  onExportOptions, 
-  onDownload 
+  onExportOptions 
 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(0.8);
@@ -25,19 +24,29 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
   const [urlLoading, setUrlLoading] = useState(true);
   const [loadingStage, setLoadingStage] = useState<string>('Initializing...');
   const [retryCount, setRetryCount] = useState(0);
+  
+  // === NUEVOS ESTADOS PARA TRANSCRIPCIÓN ===
+  const [transcriptionStatus, setTranscriptionStatus] = useState<'not_started' | 'in_progress' | 'completed' | 'failed'>('not_started');
+  const [transcriptionProgress, setTranscriptionProgress] = useState(0);
+  const [transcriptionMessage, setTranscriptionMessage] = useState('');
+  const [transcriptionText, setTranscriptionText] = useState('');
+  const [transcriptionConfidence, setTranscriptionConfidence] = useState(0);
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+  const [isPolling, setIsPolling] = useState(false);
+  
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  // Load video from S3 on component mount
+  // === CARGAR VIDEO DESDE S3 ===
   useEffect(() => {
     console.log('🎥 VideoViewer mounted with data:', {
       title: videoData.title,
       s3Key: videoData.s3Key,
       s3Url: videoData.s3Url,
       fileSize: videoData.fileSize,
-      mimeType: videoData.mimeType
+      mimeType: videoData.mimeType,
+      transcription: videoData.transcription
     });
     
-    // Execute video loading directly (no separate function to avoid ESLint warning)
     (async () => {
       try {
         setUrlLoading(true);
@@ -56,7 +65,6 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
           console.log('🔄 Trying existing signed URL first...');
           setLoadingStage('Testing existing URL...');
           
-          // Test if the existing URL is still valid
           try {
             const response = await fetch(videoData.s3Url, { method: 'HEAD' });
             if (response.ok) {
@@ -81,7 +89,7 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
           options: {
             expiresIn: 3600, // 1 hour
             useAccelerateEndpoint: false,
-            validateObjectExistence: true // This will check if the object exists
+            validateObjectExistence: true
           }
         });
         
@@ -95,7 +103,6 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
         console.error('❌ Error loading video from S3:', err);
         setLoadingStage('Failed to load from S3');
         
-        // Detailed error handling
         let errorMessage = 'Failed to load video from S3. ';
         if (err instanceof Error) {
           console.error('Error details:', err.message);
@@ -104,10 +111,6 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
             errorMessage = `Video file "${videoData.s3Key}" not found in S3. The file may have been deleted or the key is incorrect.`;
           } else if (err.message.includes('AccessDenied')) {
             errorMessage = 'Access denied to S3. Check permissions and authentication settings.';
-          } else if (err.message.includes('SignatureDoesNotMatch')) {
-            errorMessage = 'Authentication signature error. Please refresh and try again.';
-          } else if (err.message.includes('InvalidRequest')) {
-            errorMessage = 'Invalid S3 request. Check the S3 key format.';
           } else {
             errorMessage += `Error: ${err.message}`;
           }
@@ -115,13 +118,11 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
         
         setError(errorMessage);
         
-        // Only show fallback on first few retries
         if (retryCount < 2) {
           console.log('🔄 Will show fallback demo video...');
           setLoadingStage('Loading demo video as fallback...');
           
           try {
-            // Use a more reliable demo video
             const demoUrl = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
             console.log('🎬 Loading demo video:', demoUrl);
             setVideoUrl(demoUrl);
@@ -136,8 +137,192 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
         }
       }
     })();
-  }, [videoData.s3Key, videoData.s3Url, videoData.title, videoData.fileSize, videoData.mimeType, retryCount]);
+  }, [videoData.s3Key, videoData.s3Url, videoData.title, videoData.fileSize, videoData.mimeType, videoData.transcription, retryCount]);
 
+  // === POLLING PARA MONITOREAR TRANSCRIPCIÓN ===
+  const startTranscriptionPolling = useCallback(() => {
+    if (isPolling) {
+      console.log('⚠️ Polling already active, skipping...');
+      return;
+    }
+
+    console.log('🚀 Starting transcription polling...');
+    setIsPolling(true);
+
+    const pollInterval = setInterval(async () => {
+      try {
+        console.log('🔍 Checking transcription progress...');
+        
+        if (!videoData.id) {
+          console.error('❌ No video ID available');
+          clearInterval(pollInterval);
+          setIsPolling(false);
+          return;
+        }
+        
+        const progress = await TranscriptionService.checkProgress(videoData.id);
+        
+        console.log('📊 Transcription progress:', progress);
+        
+        setTranscriptionProgress(progress.progress);
+        setTranscriptionMessage(progress.message);
+        setTranscriptionError(progress.error || null);
+        
+        if (progress.status === 'completed') {
+          setTranscriptionStatus('completed');
+          setTranscriptionText(progress.transcriptionText || '');
+          setTranscriptionConfidence(progress.confidence || 0);
+          setTranscriptionMessage('Transcripción completada exitosamente');
+          clearInterval(pollInterval);
+          setIsPolling(false);
+          console.log('✅ Transcription completed!');
+          
+        } else if (progress.status === 'failed') {
+          setTranscriptionStatus('failed');
+          setTranscriptionError(progress.error || 'Error desconocido');
+          setTranscriptionMessage('Transcripción falló');
+          clearInterval(pollInterval);
+          setIsPolling(false);
+          console.log('❌ Transcription failed:', progress.error);
+          
+        } else if (progress.status === 'in_progress') {
+          setTranscriptionStatus('in_progress');
+        }
+        
+      } catch (error) {
+        console.error('❌ Error checking transcription progress:', error);
+        setTranscriptionError('Error verificando progreso');
+        clearInterval(pollInterval);
+        setIsPolling(false);
+      }
+    }, 5000); // Check every 5 seconds
+
+    // Auto-stop polling after 15 minutes
+    setTimeout(() => {
+      clearInterval(pollInterval);
+      setIsPolling(false);
+      if (transcriptionStatus === 'in_progress') {
+        setTranscriptionMessage('Transcripción tomó más tiempo del esperado');
+      }
+    }, 900000); // 15 minutes
+  }, [isPolling, videoData.id, transcriptionStatus]);
+
+  // === INICIALIZAR ESTADO DE TRANSCRIPCIÓN ===
+  useEffect(() => {
+    console.log('🎤 Initializing transcription state...');
+    
+    // Usar 'transcription' en lugar de 'transcriptionStatus' que no existe en VideoData
+    const initialStatus = videoData.transcription ? 'completed' : 'not_started';
+    const initialText = videoData.transcription || '';
+    
+    setTranscriptionStatus(initialStatus as 'not_started' | 'in_progress' | 'completed' | 'failed');
+    setTranscriptionText(initialText);
+    
+    console.log('📊 Initial transcription state:', {
+      status: initialStatus,
+      hasText: !!initialText
+    });
+
+    // Si la transcripción está en progreso, iniciar polling
+    // Como no tenemos transcriptionStatus, asumimos que si no hay texto pero 
+    // debería haber, está en progreso
+    if (!initialText && videoData.language) {
+      console.log('🔄 No transcription found, might be in progress...');
+      // Podrías iniciar polling aquí si es necesario
+    }
+  }, [videoData.id, videoData.transcription, videoData.language, startTranscriptionPolling]);
+
+  // === FUNCIONES DE TRANSCRIPCIÓN ===
+  const startTranscription = async () => {
+    try {
+      console.log('🚀 Starting transcription for video:', videoData.id);
+      
+      if (!videoData.id) {
+        throw new Error('No video ID available');
+      }
+      
+      setTranscriptionStatus('in_progress');
+      setTranscriptionMessage('Iniciando transcripción...');
+      setTranscriptionError(null);
+      setTranscriptionProgress(0);
+      
+      const result = await TranscriptionService.startTranscription({
+        videoId: videoData.id,
+        videoS3Key: videoData.s3Key,
+        language: videoData.language || 'english',
+        enableSpeakerIdentification: false,
+        enableAutomaticPunctuation: true
+      });
+      
+      console.log('✅ Transcription started:', result);
+      setTranscriptionMessage(`Job iniciado: ${result.jobName}`);
+      
+      // Start polling
+      startTranscriptionPolling();
+      
+    } catch (error) {
+      console.error('❌ Error starting transcription:', error);
+      setTranscriptionStatus('failed');
+      setTranscriptionError(error instanceof Error ? error.message : 'Error desconocido');
+      setTranscriptionMessage('Error iniciando transcripción');
+    }
+  };
+
+  const cancelTranscription = async () => {
+    try {
+      console.log('🛑 Canceling transcription...');
+      
+      if (!videoData.id) {
+        throw new Error('No video ID available');
+      }
+      
+      await TranscriptionService.cancelTranscription(videoData.id);
+      
+      setTranscriptionStatus('failed');
+      setTranscriptionMessage('Transcripción cancelada');
+      setTranscriptionError('Cancelado por el usuario');
+      setIsPolling(false);
+      
+      console.log('✅ Transcription canceled');
+      
+    } catch (error) {
+      console.error('❌ Error canceling transcription:', error);
+      alert('Error cancelando transcripción');
+    }
+  };
+
+  const copyTranscription = () => {
+    if (!transcriptionText) {
+      alert('No hay transcripción disponible para copiar.');
+      return;
+    }
+    
+    navigator.clipboard.writeText(transcriptionText).then(() => {
+      alert('¡Transcripción copiada al portapapeles!');
+    }).catch(err => {
+      console.error('Failed to copy transcription:', err);
+      alert('Error copiando transcripción al portapapeles.');
+    });
+  };
+
+  const downloadTranscription = () => {
+    if (!transcriptionText) {
+      alert('No hay transcripción disponible para descargar.');
+      return;
+    }
+    
+    const blob = new Blob([transcriptionText], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${videoData.title}_transcription.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // === CONTROLES DE VIDEO (código original) ===
   useEffect(() => {
     const video = videoRef.current;
     if (video && videoUrl) {
@@ -173,16 +358,16 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
           
           let errorMessage = 'Failed to play video. ';
           switch (videoElement.error.code) {
-            case 1: // MEDIA_ERR_ABORTED
+            case 1:
               errorMessage += 'Video loading was aborted.';
               break;
-            case 2: // MEDIA_ERR_NETWORK
+            case 2:
               errorMessage += 'Network error occurred.';
               break;
-            case 3: // MEDIA_ERR_DECODE
+            case 3:
               errorMessage += 'Video format not supported or corrupted.';
               break;
-            case 4: // MEDIA_ERR_SRC_NOT_SUPPORTED
+            case 4:
               errorMessage += 'Video format not supported.';
               break;
             default:
@@ -199,7 +384,7 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
         console.log('✅ Video can play');
         setLoadingStage('Ready to play');
         setUrlLoading(false);
-        setError(null); // Clear any previous errors
+        setError(null);
       };
       const handleLoadedData = () => {
         console.log('✅ Video data loaded');
@@ -284,20 +469,6 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
     }
   };
 
-  const copyTranscription = () => {
-    if (!videoData.transcription) {
-      alert('No transcription available for this video.');
-      return;
-    }
-    
-    navigator.clipboard.writeText(videoData.transcription).then(() => {
-      alert('Transcription copied to clipboard!');
-    }).catch(err => {
-      console.error('Failed to copy transcription:', err);
-      alert('Failed to copy transcription to clipboard.');
-    });
-  };
-
   const formatTime = (time: number) => {
     if (!time || isNaN(time)) return '0:00';
     const minutes = Math.floor(time / 60);
@@ -324,7 +495,35 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
     setError(null);
     setVideoUrl('');
     setUrlLoading(true);
-    setRetryCount(1); // This will trigger the useEffect
+    setRetryCount(1);
+  };
+
+  // === FUNCIONES AUXILIARES PARA UI ===
+  const getTranscriptionStatusColor = () => {
+    switch (transcriptionStatus) {
+      case 'completed': return '#28a745';
+      case 'in_progress': return '#ffc107';
+      case 'failed': return '#dc3545';
+      default: return '#6c757d';
+    }
+  };
+
+  const getTranscriptionStatusIcon = () => {
+    switch (transcriptionStatus) {
+      case 'completed': return '✅';
+      case 'in_progress': return '⏳';
+      case 'failed': return '❌';
+      default: return '📝';
+    }
+  };
+
+  const getTranscriptionStatusText = () => {
+    switch (transcriptionStatus) {
+      case 'completed': return 'Transcripción Completada';
+      case 'in_progress': return 'Transcribiendo...';
+      case 'failed': return 'Error en Transcripción';
+      default: return 'Sin Transcripción';
+    }
   };
 
   return (
@@ -366,7 +565,7 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
         </div>
 
         {/* Main Layout */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 350px', gap: '30px', alignItems: 'start' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 400px', gap: '30px', alignItems: 'start' }}>
           {/* Left Side - Video */}
           <div>
             {/* Video Container */}
@@ -563,37 +762,285 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
             </div>
           </div>
 
-          {/* Right Side - Transcription */}
+          {/* Right Side - Transcription Panel */}
           <div>
-            <div style={{ marginBottom: '20px' }}>
-              <h3 style={{ margin: '0 0 10px 0', fontSize: '20px', color: '#343a40' }}>Transcription</h3>
-              <div>
-                {videoData.transcription ? (
-                  <span style={{ color: '#28a745', fontSize: '14px', fontWeight: '500' }}>✅ Ready</span>
-                ) : (
-                  <span style={{ color: '#ffc107', fontSize: '14px', fontWeight: '500' }}>⏳ Processing...</span>
-                )}
-              </div>
-            </div>
-
+            {/* Transcription Header */}
             <div style={{ 
               backgroundColor: 'white', 
               padding: '20px', 
-              borderRadius: '12px', 
+              borderRadius: '12px 12px 0 0',
+              boxShadow: '0 2px 10px rgba(0,0,0,0.1)',
+              borderBottom: '1px solid #e9ecef'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                <h3 style={{ margin: 0, fontSize: '20px', color: '#343a40' }}>🎤 Transcripción</h3>
+                <div style={{ 
+                  padding: '4px 12px', 
+                  borderRadius: '20px', 
+                  backgroundColor: getTranscriptionStatusColor(),
+                  color: 'white',
+                  fontSize: '12px',
+                  fontWeight: 'bold'
+                }}>
+                  {getTranscriptionStatusIcon()} {getTranscriptionStatusText()}
+                </div>
+              </div>
+
+              {/* Transcription Progress */}
+              {transcriptionStatus === 'in_progress' && (
+                <div style={{ marginBottom: '15px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '14px', color: '#495057' }}>Progreso</span>
+                    <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#495057' }}>{transcriptionProgress}%</span>
+                  </div>
+                  <div style={{ 
+                    width: '100%', 
+                    backgroundColor: '#e9ecef', 
+                    borderRadius: '10px', 
+                    overflow: 'hidden',
+                    height: '8px'
+                  }}>
+                    <div 
+                      style={{ 
+                        width: `${transcriptionProgress}%`,
+                        height: '100%',
+                        backgroundColor: '#ffc107',
+                        transition: 'width 0.3s ease'
+                      }}
+                    />
+                  </div>
+                  <p style={{ margin: '8px 0 0 0', fontSize: '13px', color: '#6c757d', fontStyle: 'italic' }}>
+                    {transcriptionMessage}
+                  </p>
+                </div>
+              )}
+
+              {/* Transcription Actions */}
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                {transcriptionStatus === 'not_started' && (
+                  <button 
+                    onClick={startTranscription}
+                    style={{
+                      padding: '8px 16px',
+                      backgroundColor: '#28a745',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '14px',
+                      fontWeight: '500'
+                    }}
+                  >
+                    🚀 Iniciar Transcripción
+                  </button>
+                )}
+
+                {transcriptionStatus === 'in_progress' && (
+                  <button 
+                    onClick={cancelTranscription}
+                    style={{
+                      padding: '8px 16px',
+                      backgroundColor: '#dc3545',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '14px',
+                      fontWeight: '500'
+                    }}
+                  >
+                    🛑 Cancelar
+                  </button>
+                )}
+
+                {transcriptionStatus === 'failed' && (
+                  <button 
+                    onClick={startTranscription}
+                    style={{
+                      padding: '8px 16px',
+                      backgroundColor: '#ffc107',
+                      color: '#212529',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '14px',
+                      fontWeight: '500'
+                    }}
+                  >
+                    🔄 Reintentar
+                  </button>
+                )}
+
+                {transcriptionStatus === 'completed' && transcriptionText && (
+                  <>
+                    <button 
+                      onClick={copyTranscription}
+                      style={{
+                        padding: '8px 16px',
+                        backgroundColor: '#17a2b8',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontSize: '14px',
+                        fontWeight: '500'
+                      }}
+                    >
+                      📋 Copiar
+                    </button>
+                    <button 
+                      onClick={downloadTranscription}
+                      style={{
+                        padding: '8px 16px',
+                        backgroundColor: '#28a745',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontSize: '14px',
+                        fontWeight: '500'
+                      }}
+                    >
+                      💾 Descargar
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {/* Transcription Stats */}
+              {transcriptionStatus === 'completed' && transcriptionText && (
+                <div style={{ 
+                  marginTop: '15px', 
+                  padding: '10px', 
+                  backgroundColor: '#f8f9fa', 
+                  borderRadius: '6px',
+                  fontSize: '13px',
+                  color: '#495057'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}>
+                    <span>📝 Palabras:</span>
+                    <strong>{transcriptionText.split(/\s+/).filter(w => w.length > 0).length}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}>
+                    <span>🎯 Confianza:</span>
+                    <strong>{(transcriptionConfidence * 100).toFixed(1)}%</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>🌐 Idioma:</span>
+                    <strong>{videoData.language || 'english'}</strong>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Transcription Content */}
+            <div style={{ 
+              backgroundColor: 'white', 
+              borderRadius: '0 0 12px 12px',
               maxHeight: '500px', 
               overflowY: 'auto',
               boxShadow: '0 2px 10px rgba(0,0,0,0.1)',
-              border: '1px solid #e9ecef'
+              border: '1px solid #e9ecef',
+              borderTop: 'none'
             }}>
-              {videoData.transcription ? (
-                <div>
-                  <p style={{ lineHeight: '1.6', margin: 0, color: '#495057' }}>{videoData.transcription}</p>
+              {transcriptionStatus === 'completed' && transcriptionText ? (
+                <div style={{ padding: '20px' }}>
+                  <p style={{ 
+                    lineHeight: '1.6', 
+                    margin: 0, 
+                    color: '#495057',
+                    fontSize: '15px',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word'
+                  }}>
+                    {transcriptionText}
+                  </p>
+                </div>
+              ) : transcriptionStatus === 'in_progress' ? (
+                <div style={{ 
+                  textAlign: 'center', 
+                  color: '#6c757d', 
+                  padding: '40px 20px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '15px'
+                }}>
+                  <div style={{ fontSize: '48px' }}>⏳</div>
+                  <h4 style={{ margin: 0, color: '#495057' }}>Transcribiendo...</h4>
+                  <p style={{ margin: 0, lineHeight: '1.5', textAlign: 'center' }}>
+                    AWS Transcribe está procesando tu video.<br />
+                    Esto puede tomar algunos minutos.
+                  </p>
+                  <div style={{ 
+                    fontSize: '12px', 
+                    color: '#6c757d',
+                    backgroundColor: '#f8f9fa',
+                    padding: '8px 12px',
+                    borderRadius: '20px',
+                    fontFamily: 'monospace'
+                  }}>
+                    {transcriptionMessage}
+                  </div>
+                  {isPolling && (
+                    <div style={{ fontSize: '11px', color: '#28a745' }}>
+                      🔄 Verificando cada 5 segundos...
+                    </div>
+                  )}
+                </div>
+              ) : transcriptionStatus === 'failed' ? (
+                <div style={{ 
+                  textAlign: 'center', 
+                  color: '#dc3545', 
+                  padding: '40px 20px' 
+                }}>
+                  <div style={{ fontSize: '48px', marginBottom: '15px' }}>❌</div>
+                  <h4 style={{ margin: '0 0 10px 0', color: '#dc3545' }}>Error en Transcripción</h4>
+                  <p style={{ margin: '0 0 15px 0', lineHeight: '1.5' }}>
+                    {transcriptionError || 'La transcripción falló por un error desconocido.'}
+                  </p>
+                  <button 
+                    onClick={startTranscription}
+                    style={{
+                      padding: '10px 20px',
+                      backgroundColor: '#ffc107',
+                      color: '#212529',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontWeight: 'bold'
+                    }}
+                  >
+                    🔄 Intentar de Nuevo
+                  </button>
                 </div>
               ) : (
-                <div style={{ textAlign: 'center', color: '#6c757d', padding: '40px 20px' }}>
+                <div style={{ 
+                  textAlign: 'center', 
+                  color: '#6c757d', 
+                  padding: '40px 20px' 
+                }}>
                   <div style={{ fontSize: '48px', marginBottom: '15px' }}>📝</div>
-                  <h4 style={{ margin: '0 0 10px 0', color: '#495057' }}>Transcription Available!</h4>
-                  <p style={{ margin: 0, lineHeight: '1.5' }}>Auto-generated transcription for this video is ready to view and download.</p>
+                  <h4 style={{ margin: '0 0 10px 0', color: '#495057' }}>Sin Transcripción</h4>
+                  <p style={{ margin: '0 0 15px 0', lineHeight: '1.5' }}>
+                    Este video aún no tiene transcripción.<br />
+                    Puedes generar una automáticamente.
+                  </p>
+                  <button 
+                    onClick={startTranscription}
+                    style={{
+                      padding: '12px 24px',
+                      backgroundColor: '#28a745',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      fontSize: '16px',
+                      fontWeight: 'bold'
+                    }}
+                  >
+                    🚀 Generar Transcripción
+                  </button>
                 </div>
               )}
             </div>
@@ -624,38 +1071,42 @@ const VideoViewer: React.FC<VideoViewerProps> = ({
           }}>
             ← Back to Library
           </button>
-          <button 
-            onClick={copyTranscription}
-            disabled={!videoData.transcription}
-            style={{ 
-              padding: '12px 24px', 
-              backgroundColor: videoData.transcription ? '#17a2b8' : '#e9ecef', 
-              color: videoData.transcription ? 'white' : '#6c757d', 
-              border: 'none', 
-              borderRadius: '8px', 
-              cursor: videoData.transcription ? 'pointer' : 'not-allowed',
-              fontSize: '16px',
-              fontWeight: '500'
-            }}
-          >
-            📋 Copy Transcription
-          </button>
-          <button 
-            onClick={onDownload}
-            disabled={!videoData.transcription}
-            style={{ 
-              padding: '12px 24px', 
-              backgroundColor: videoData.transcription ? '#28a745' : '#e9ecef', 
-              color: videoData.transcription ? 'white' : '#6c757d', 
-              border: 'none', 
-              borderRadius: '8px', 
-              cursor: videoData.transcription ? 'pointer' : 'not-allowed',
-              fontSize: '16px',
-              fontWeight: '500'
-            }}
-          >
-            💾 Download
-          </button>
+          
+          {transcriptionStatus === 'completed' && transcriptionText && (
+            <>
+              <button 
+                onClick={copyTranscription}
+                style={{ 
+                  padding: '12px 24px', 
+                  backgroundColor: '#17a2b8', 
+                  color: 'white', 
+                  border: 'none', 
+                  borderRadius: '8px', 
+                  cursor: 'pointer',
+                  fontSize: '16px',
+                  fontWeight: '500'
+                }}
+              >
+                📋 Copy Transcription
+              </button>
+              <button 
+                onClick={downloadTranscription}
+                style={{ 
+                  padding: '12px 24px', 
+                  backgroundColor: '#28a745', 
+                  color: 'white', 
+                  border: 'none', 
+                  borderRadius: '8px', 
+                  cursor: 'pointer',
+                  fontSize: '16px',
+                  fontWeight: '500'
+                }}
+              >
+                💾 Download
+              </button>
+            </>
+          )}
+          
           <button onClick={onExportOptions} style={{ 
             padding: '12px 24px', 
             backgroundColor: '#ffc107', 

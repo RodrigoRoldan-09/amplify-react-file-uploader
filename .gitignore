@@ -27,3 +27,8 @@ dist-ssr
 .amplify
 amplify_outputs*
 amplifyconfiguration*
+
+# Variables de entorno
+.env
+.env.local
+.env.production

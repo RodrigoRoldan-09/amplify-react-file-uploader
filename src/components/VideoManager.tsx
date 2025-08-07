@@ -1,9 +1,9 @@
-// components/VideoManager.tsx - WITH TRANSCRIPTION SUPPORT - ERRORS FIXED
+// components/VideoManager.tsx - CON TRANSCRIPCIÓN INTEGRADA
 import { useState, useEffect, useCallback } from "react";
 import { generateClient } from "aws-amplify/data";
 import { getUrl, remove, list } from "aws-amplify/storage";
-import type { Schema } from "../amplify/data/resource.ts";
-import TranscriptionService from "../services/transcriptionService.ts";
+import type { Schema } from "../../amplify/data/resource";
+import TranscriptionService from "../../services/transcriptionService";
 
 const client = generateClient<Schema>();
 
@@ -16,6 +16,7 @@ type DatabaseVideo = {
   language?: string | null;
   quality?: string | null;
   transcription?: string | null;
+  transcriptionText?: string | null; // Agregado para manejar ambos campos
   duration?: number | null;
   fileSize?: number | null;
   mimeType?: string | null;
@@ -23,7 +24,7 @@ type DatabaseVideo = {
   status?: string | null;
   transcriptionStatus?: string | null;
   transcriptionJobName?: string | null;
-  audioConversionStatus?: string | null;
+  audioExtractionStatus?: string | null;
 };
 
 export interface VideoItem {
@@ -42,6 +43,7 @@ export interface VideoItem {
   transcriptionStatus?: string;
   transcriptionJobName?: string;
   hasTranscription?: boolean;
+  transcription?: string;
 }
 
 interface VideoManagerProps {
@@ -67,6 +69,11 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
   const [editQuality, setEditQuality] = useState("");
   const [saving, setSaving] = useState(false);
   
+  // === NUEVOS ESTADOS PARA TRANSCRIPCIÓN ===
+  const [transcriptionProgress, setTranscriptionProgress] = useState<Record<string, number>>({});
+  const [transcriptionMessages, setTranscriptionMessages] = useState<Record<string, string>>({});
+  const [pollingVideos, setPollingVideos] = useState<Set<string>>(new Set());
+  
   const videosPerPage = 3;
 
   const languages = [
@@ -82,12 +89,14 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
     { value: 'arabic', label: 'Arabic' }
   ];
 
-  const addDebugInfo = (message: string) => {
+  const addDebugInfo = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
     const debugMessage = `[${timestamp}] ${message}`;
     console.log(debugMessage);
     setDebugInfo(prev => [...prev.slice(-10), debugMessage]);
-  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const formatDuration = (seconds: number): string => {
     if (!seconds || seconds === 0) return '0:00';
@@ -117,103 +126,243 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
     return `https://via.placeholder.com/200x120/${color}/ffffff?text=${encodedTitle}`;
   };
 
+  // === FUNCIONES PARA TRANSCRIPCIÓN ===
+  
   // Get transcription status badge
-  const getTranscriptionBadge = (status?: string) => {
+  const getTranscriptionBadge = (status?: string, hasTranscription?: boolean) => {
+    if (hasTranscription) {
+      return { icon: '✅', text: 'Completada', color: '#28a745' };
+    }
+    
     switch (status) {
       case 'completed':
-        return { icon: '✅', text: 'Transcription Ready', color: '#28a745' };
+        return { icon: '✅', text: 'Completada', color: '#28a745' };
       case 'in_progress':
-        return { icon: '⏳', text: 'Transcribing...', color: '#ffc107' };
+        return { icon: '⏳', text: 'Procesando...', color: '#ffc107' };
       case 'failed':
-        return { icon: '❌', text: 'Transcription Failed', color: '#dc3545' };
+        return { icon: '❌', text: 'Error', color: '#dc3545' };
       case 'not_started':
-        return { icon: '⏸️', text: 'No Transcription', color: '#6c757d' };
+        return { icon: '⏸️', text: 'Sin iniciar', color: '#6c757d' };
       default:
-        return { icon: '❓', text: 'Unknown Status', color: '#6c757d' };
+        return { icon: '❓', text: 'Desconocido', color: '#6c757d' };
     }
   };
+
+  // Iniciar transcripción para un video
+  const startTranscription = async (videoId: string, videoS3Key: string, language: string) => {
+    try {
+      console.log(`Iniciando transcripción para video ${videoId}`);
+      
+      // Actualizar estado local inmediatamente
+      setVideos(prevVideos => 
+        prevVideos.map(video => 
+          video.id === videoId 
+            ? { ...video, transcriptionStatus: 'in_progress' }
+            : video
+        )
+      );
+      
+      setTranscriptionMessages(prev => ({
+        ...prev,
+        [videoId]: 'Iniciando transcripción...'
+      }));
+      
+      const result = await TranscriptionService.startTranscription({
+        videoId,
+        videoS3Key,
+        language,
+        enableSpeakerIdentification: false,
+        enableAutomaticPunctuation: true
+      });
+      
+      console.log(`✅ Transcripción iniciada: ${result.jobName}`);
+      
+      setTranscriptionMessages(prev => ({
+        ...prev,
+        [videoId]: `Job iniciado: ${result.jobName}`
+      }));
+      
+      // Iniciar polling para este video
+      startVideoPolling(videoId);
+      
+    } catch (error) {
+      console.error('❌ Error iniciando transcripción:', error);
+      
+      // Actualizar estado de error
+      setVideos(prevVideos => 
+        prevVideos.map(video => 
+          video.id === videoId 
+            ? { ...video, transcriptionStatus: 'failed' }
+            : video
+        )
+      );
+      
+      setTranscriptionMessages(prev => ({
+        ...prev,
+        [videoId]: 'Error iniciando transcripción'
+      }));
+      
+      alert('Error iniciando transcripción. Revisa la consola para más detalles.');
+    }
+  };
+
+  // Polling para un video específico
+  const startVideoPolling = useCallback((videoId: string) => {
+    if (pollingVideos.has(videoId)) {
+      console.log(`⚠️ Ya hay polling activo para video ${videoId}`);
+      return;
+    }
+
+    console.log(`🚀 Iniciando polling para video ${videoId}`);
+    setPollingVideos(prev => new Set([...prev, videoId]));
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const progress = await TranscriptionService.checkProgress(videoId);
+        
+        console.log(`📊 Progreso video ${videoId}:`, progress);
+        
+        setTranscriptionProgress(prev => ({
+          ...prev,
+          [videoId]: progress.progress
+        }));
+        
+        setTranscriptionMessages(prev => ({
+          ...prev,
+          [videoId]: progress.message
+        }));
+        
+        if (progress.status === 'completed') {
+          // Actualizar video con transcripción completada
+          setVideos(prevVideos => 
+            prevVideos.map(video => 
+              video.id === videoId 
+                ? { 
+                    ...video, 
+                    transcriptionStatus: 'completed',
+                    hasTranscription: true,
+                    transcription: progress.transcriptionText 
+                  }
+                : video
+            )
+          );
+          
+          // Detener polling
+          clearInterval(pollInterval);
+          setPollingVideos(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(videoId);
+            return newSet;
+          });
+          
+          console.log(`✅ Transcripción completada para video ${videoId}`);
+          
+        } else if (progress.status === 'failed') {
+          // Actualizar video con error
+          setVideos(prevVideos => 
+            prevVideos.map(video => 
+              video.id === videoId 
+                ? { ...video, transcriptionStatus: 'failed' }
+                : video
+            )
+          );
+          
+          // Detener polling
+          clearInterval(pollInterval);
+          setPollingVideos(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(videoId);
+            return newSet;
+          });
+          
+          console.log(`❌ Transcripción falló para video ${videoId}: ${progress.error}`);
+        }
+        
+      } catch (error) {
+        console.error(`❌ Error verificando progreso de ${videoId}:`, error);
+        
+        // Detener polling en caso de error
+        clearInterval(pollInterval);
+        setPollingVideos(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(videoId);
+          return newSet;
+        });
+      }
+    }, 10000); // Check cada 10 segundos (menos frecuente que en VideoViewer)
+
+    // Auto-stop después de 20 minutos
+    setTimeout(() => {
+      clearInterval(pollInterval);
+      setPollingVideos(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(videoId);
+        return newSet;
+      });
+    }, 1200000); // 20 minutos
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pollingVideos]);
 
   // Retry transcription
   const retryTranscription = async (videoId: string, s3Key: string, language: string) => {
-    try {
-      addDebugInfo(`Retrying transcription for video ${videoId}`);
-      
-      const jobName = await TranscriptionService.startTranscription({
-        videoId,
-        s3Key,
-        language,
-        bucketName: 'file-uploader-demo-rodes-01'
-      });
-      
-      addDebugInfo(`✅ Transcription retry started: ${jobName}`);
-      alert('Transcription process restarted! Check back in a few minutes.');
-      
-      // Reload videos to update status
-      loadVideos();
-      
-    } catch (error) {
-      console.error('❌ Error retrying transcription:', error);
-      addDebugInfo(`❌ Transcription retry failed: ${error}`);
-      alert('Failed to restart transcription. Please try again.');
-    }
+    await startTranscription(videoId, s3Key, language);
   };
 
-  // Test S3 connectivity
-  const testS3Connection = useCallback(async () => {
-    try {
-      addDebugInfo('Testing S3 connectivity...');
-      const listResult = await list({ path: 'videos/' });
-      addDebugInfo(`S3 List Result: Found ${listResult.items.length} items`);
+// Test S3 connectivity
+const testS3Connection = useCallback(async () => {
+  try {
+    addDebugInfo('Testing S3 connectivity...');
+    const listResult = await list({ path: 'videos/' });
+    addDebugInfo(`S3 List Result: Found ${listResult.items.length} items`);
+    
+    if (listResult.items.length > 0) {
+      const firstItem = listResult.items[0];
+      addDebugInfo(`First S3 item: ${firstItem.path}`);
       
-      if (listResult.items.length > 0) {
-        const firstItem = listResult.items[0];
-        addDebugInfo(`First S3 item: ${firstItem.path}`);
-        
-        try {
-          await getUrl({ path: firstItem.path });
-          addDebugInfo(`✅ S3 URL generation successful`);
-          return true;
-        } catch (urlError) {
-          addDebugInfo(`❌ S3 URL generation failed: ${urlError}`);
-          return false;
-        }
-      } else {
-        addDebugInfo('No items found in S3 videos/ folder');
+      try {
+        await getUrl({ path: firstItem.path });
+        addDebugInfo(`✅ S3 URL generation successful`);
         return true;
+      } catch (urlError) {
+        addDebugInfo(`❌ S3 URL generation failed: ${urlError}`);
+        return false;
       }
-    } catch (error) {
-      addDebugInfo(`❌ S3 connectivity test failed: ${error}`);
-      return false;
+    } else {
+      addDebugInfo('No items found in S3 videos/ folder');
+      return true;
     }
-  }, []);
+  } catch (error) {
+    addDebugInfo(`❌ S3 connectivity test failed: ${error}`);
+    return false;
+  }
+}, [addDebugInfo]); // ✅ Agregada la dependencia addDebugInfo
 
-  // Test DynamoDB connectivity - FIXED: Added required input parameter
-  const testDynamoDBConnection = useCallback(async () => {
-    try {
-      addDebugInfo('Testing DynamoDB connectivity...');
-      // FIX 1: Added required input parameter {} for list()
-      const result = await client.models.Video.list({});
-      addDebugInfo(`DynamoDB Result: Found ${result.data?.length || 0} records`);
-      addDebugInfo(`DynamoDB Errors: ${result.errors?.length || 0} errors`);
-      
-      if (result.errors && result.errors.length > 0) {
-        result.errors.forEach((error, index) => {
-          addDebugInfo(`DynamoDB Error ${index + 1}: ${error.message}`);
-        });
-      }
-      
-      return result;
-    } catch (error) {
-      addDebugInfo(`❌ DynamoDB connectivity test failed: ${error}`);
-      throw error;
+// Test DynamoDB connectivity
+const testDynamoDBConnection = useCallback(async () => {
+  try {
+    addDebugInfo('Testing DynamoDB connectivity...');
+    const result = await client.models.Video.list({});
+    addDebugInfo(`DynamoDB Result: Found ${result.data?.length || 0} records`);
+    addDebugInfo(`DynamoDB Errors: ${result.errors?.length || 0} errors`);
+    
+    if (result.errors && result.errors.length > 0) {
+      result.errors.forEach((error, index) => {
+        addDebugInfo(`DynamoDB Error ${index + 1}: ${error.message}`);
+      });
     }
-  }, []);
+    
+    return result;
+  } catch (error) {
+    addDebugInfo(`❌ DynamoDB connectivity test failed: ${error}`);
+    throw error;
+  }
+}, [addDebugInfo]); // ✅ Agregada la dependencia addDebugInfo
 
   const processVideosData = useCallback(async (dbVideos: DatabaseVideo[]) => {
-    addDebugInfo(`Processing ${dbVideos.length} videos from database`);
+    console.log(`Processing ${dbVideos.length} videos from database`);
     
     if (!dbVideos || dbVideos.length === 0) {
-      addDebugInfo('No videos to process');
+      console.log('No videos to process');
       setVideos([]);
       return;
     }
@@ -221,15 +370,15 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
     const processedVideos = await Promise.all(
       dbVideos.map(async (video, index) => {
         try {
-          addDebugInfo(`Processing video ${index + 1}: ${video.s3Key}`);
+          console.log(`Processing video ${index + 1}: ${video.s3Key}`);
           
           let signedUrl = '';
           try {
             const urlResult = await getUrl({ path: video.s3Key });
             signedUrl = urlResult.url.toString();
-            addDebugInfo(`✅ Got signed URL for ${video.s3Key}`);
+            console.log(`✅ Got signed URL for ${video.s3Key}`);
           } catch (urlError) {
-            addDebugInfo(`❌ Failed to get URL for ${video.s3Key}: ${urlError}`);
+            console.log(`❌ Failed to get URL for ${video.s3Key}: ${urlError}`);
             signedUrl = `#error-${video.id}`;
           }
 
@@ -248,22 +397,33 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
             status: video.status || 'completed',
             transcriptionStatus: video.transcriptionStatus || 'not_started',
             transcriptionJobName: video.transcriptionJobName || undefined,
-            hasTranscription: !!(video.transcription && video.transcription.trim().length > 0)
+            hasTranscription: !!(video.transcription || video.transcriptionText) && 
+                              ((video.transcription?.trim() && video.transcription.trim().length > 0) || 
+                               (video.transcriptionText?.trim() && video.transcriptionText.trim().length > 0)),
+            transcription: video.transcription || video.transcriptionText || undefined
           } as VideoItem;
 
-          addDebugInfo(`✅ Processed video: ${processedVideo.title} (Transcription: ${processedVideo.transcriptionStatus})`);
+          console.log(`✅ Processed video: ${processedVideo.title} (Transcription: ${processedVideo.transcriptionStatus})`);
+          
+          // Si el video está en progreso, iniciar polling
+          if (processedVideo.transcriptionStatus === 'in_progress') {
+            console.log(`🔄 Video ${video.id} en progreso, iniciando polling...`);
+            setTimeout(() => startVideoPolling(video.id), 2000); // Delay para evitar sobrecarga
+          }
+          
           return processedVideo;
         } catch (error) {
-          addDebugInfo(`❌ Error processing video ${video.id}: ${error}`);
+          console.log(`❌ Error processing video ${video.id}: ${error}`);
           return null;
         }
       })
     );
 
     const validVideos = processedVideos.filter((video): video is VideoItem => video !== null);
-    addDebugInfo(`✅ Successfully processed ${validVideos.length}/${dbVideos.length} videos`);
+    console.log(`✅ Successfully processed ${validVideos.length}/${dbVideos.length} videos`);
     setVideos(validVideos);
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startVideoPolling]);
 
   const loadVideos = useCallback(async () => {
     try {
@@ -299,6 +459,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
     } finally {
       setLoading(false);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [processVideosData, testS3Connection, testDynamoDBConnection]);
 
   // CRUD Operations
@@ -381,7 +542,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
     onViewVideo(video);
   };
 
-  // Manual create test video with transcription - FIXED: Type for testVideo.data
+  // Manual create test video with transcription
   const createTestVideo = async () => {
     try {
       addDebugInfo('Creating test video with transcription in DynamoDB...');
@@ -392,7 +553,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
         s3Key: 'videos/test-video-transcribe.mp4',
         language: 'english',
         quality: 'high',
-        transcription: 'This is a test transcription. Hello and welcome to this test video. We are demonstrating the transcription functionality powered by AWS Transcribe. The system can automatically convert speech to text in multiple languages. This feature makes videos more accessible and searchable.',
+        transcriptionText: 'This is a test transcription. Hello and welcome to this test video. We are demonstrating the transcription functionality powered by AWS Transcribe. The system can automatically convert speech to text in multiple languages. This feature makes videos more accessible and searchable.',
         transcriptionStatus: 'completed',
         transcriptionJobName: 'test_job_' + Date.now(),
         duration: 120,
@@ -402,7 +563,6 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
         status: 'completed'
       });
       
-      // FIX 2: Proper type handling for testVideo.data with specific type
       if (testVideo.data && !Array.isArray(testVideo.data)) {
         const videoData = testVideo.data as { id?: string };
         const videoId = videoData.id;
@@ -458,14 +618,10 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
     }
   };
 
-  // FIX 3 & 4: Remove real-time subscription since observeQuery doesn't have subscribe
   useEffect(() => {
     addDebugInfo('VideoManager component mounted');
     loadVideos();
-    
-    // Note: Real-time subscription removed due to API limitations
-    // If you need real-time updates, consider polling or manual refresh
-    
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadVideos]);
 
   const filteredVideos = videos.filter(video =>
@@ -679,6 +835,48 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
           </details>
         </div>
 
+        {/* === NUEVA SECCIÓN: TRANSCRIPTION STATUS OVERVIEW === */}
+        {videos.length > 0 && (
+          <div className="transcription-overview" style={{
+            backgroundColor: 'white',
+            border: '1px solid #e9ecef',
+            borderRadius: '8px',
+            padding: '15px',
+            marginBottom: '20px'
+          }}>
+            <h4 style={{ margin: '0 0 10px 0', color: '#495057' }}>🎤 Estado de Transcripciones</h4>
+            <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap' }}>
+              {(() => {
+                const completed = videos.filter(v => v.hasTranscription).length;
+                const inProgress = videos.filter(v => v.transcriptionStatus === 'in_progress').length;
+                const failed = videos.filter(v => v.transcriptionStatus === 'failed').length;
+                const notStarted = videos.filter(v => v.transcriptionStatus === 'not_started' || !v.transcriptionStatus).length;
+                
+                return (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                      <span style={{ color: '#28a745', fontWeight: 'bold' }}>✅ {completed}</span>
+                      <span style={{ fontSize: '14px', color: '#6c757d' }}>Completadas</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                      <span style={{ color: '#ffc107', fontWeight: 'bold' }}>⏳ {inProgress}</span>
+                      <span style={{ fontSize: '14px', color: '#6c757d' }}>En Progreso</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                      <span style={{ color: '#dc3545', fontWeight: 'bold' }}>❌ {failed}</span>
+                      <span style={{ fontSize: '14px', color: '#6c757d' }}>Con Error</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                      <span style={{ color: '#6c757d', fontWeight: 'bold' }}>⏸️ {notStarted}</span>
+                      <span style={{ fontSize: '14px', color: '#6c757d' }}>Sin Iniciar</span>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
         {/* Bulk Actions */}
         {selectedVideos.length > 0 && (
           <div className="bulk-actions">
@@ -715,7 +913,10 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
 
         <div className="videos-table">
           {currentVideos.map((video) => {
-            const transcriptionBadge = getTranscriptionBadge(video.transcriptionStatus);
+            const transcriptionBadge = getTranscriptionBadge(video.transcriptionStatus, video.hasTranscription);
+            const isPolling = pollingVideos.has(video.id);
+            const progress = transcriptionProgress[video.id] || 0;
+            const message = transcriptionMessages[video.id] || '';
             
             return (
               <div key={video.id} className={`video-row ${selectedVideos.includes(video.id) ? 'selected' : ''}`}>
@@ -835,41 +1036,110 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
                         </h3>
                         <p className="video-description-row">{video.description}</p>
                         
-                        {/* Transcription Status Row */}
+                        {/* === NUEVA SECCIÓN: TRANSCRIPTION STATUS CON PROGRESO === */}
                         <div className="transcription-status-row" style={{ 
                           margin: '8px 0', 
-                          padding: '6px 12px', 
+                          padding: '8px 12px', 
                           backgroundColor: '#f8f9fa', 
-                          borderRadius: '15px',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '8px',
-                          fontSize: '13px'
+                          borderRadius: '8px',
+                          border: `1px solid ${transcriptionBadge.color}20`
                         }}>
-                          <span style={{ color: transcriptionBadge.color, fontWeight: 'bold' }}>
-                            {transcriptionBadge.icon} {transcriptionBadge.text}
-                          </span>
-                          {video.transcriptionStatus === 'failed' && (
-                            <button 
-                              onClick={() => retryTranscription(video.id, video.s3Key, video.language)}
-                              style={{
-                                background: 'none',
-                                border: '1px solid #dc3545',
-                                color: '#dc3545',
-                                padding: '2px 8px',
-                                borderRadius: '10px',
-                                fontSize: '11px',
-                                cursor: 'pointer'
-                              }}
-                            >
-                              🔄 Retry
-                            </button>
-                          )}
-                          {video.hasTranscription && (
-                            <span style={{ color: '#28a745', fontSize: '11px' }}>
-                              📝 Text Available
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '5px' }}>
+                            <span style={{ 
+                              color: transcriptionBadge.color, 
+                              fontWeight: 'bold', 
+                              fontSize: '13px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '5px'
+                            }}>
+                              {transcriptionBadge.icon} {transcriptionBadge.text}
+                              {isPolling && <span style={{ fontSize: '10px', color: '#ffc107' }}>🔄</span>}
                             </span>
+                            
+                            {/* Progress percentage */}
+                            {video.transcriptionStatus === 'in_progress' && (
+                              <span style={{ fontSize: '11px', fontWeight: 'bold', color: transcriptionBadge.color }}>
+                                {progress}%
+                              </span>
+                            )}
+                          </div>
+                          
+                          {/* Progress bar for in-progress transcriptions */}
+                          {video.transcriptionStatus === 'in_progress' && (
+                            <div style={{
+                              width: '100%',
+                              height: '4px',
+                              backgroundColor: '#e9ecef',
+                              borderRadius: '2px',
+                              overflow: 'hidden',
+                              marginBottom: '5px'
+                            }}>
+                              <div style={{
+                                width: `${progress}%`,
+                                height: '100%',
+                                backgroundColor: transcriptionBadge.color,
+                                transition: 'width 0.3s ease'
+                              }} />
+                            </div>
                           )}
+                          
+                          {/* Status message */}
+                          {message && (
+                            <div style={{ fontSize: '11px', color: '#6c757d', fontStyle: 'italic' }}>
+                              {message}
+                            </div>
+                          )}
+                          
+                          {/* Action buttons */}
+                          <div style={{ display: 'flex', gap: '5px', marginTop: '5px' }}>
+                            {video.transcriptionStatus === 'not_started' && (
+                              <button 
+                                onClick={() => startTranscription(video.id, video.s3Key, video.language)}
+                                style={{
+                                  background: '#28a745',
+                                  color: 'white',
+                                  border: 'none',
+                                  padding: '3px 8px',
+                                  borderRadius: '12px',
+                                  fontSize: '10px',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                🚀 Iniciar
+                              </button>
+                            )}
+                            
+                            {video.transcriptionStatus === 'failed' && (
+                              <button 
+                                onClick={() => retryTranscription(video.id, video.s3Key, video.language)}
+                                style={{
+                                  background: '#ffc107',
+                                  color: '#212529',
+                                  border: 'none',
+                                  padding: '3px 8px',
+                                  borderRadius: '12px',
+                                  fontSize: '10px',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                🔄 Reintentar
+                              </button>
+                            )}
+                            
+                            {video.hasTranscription && (
+                              <span style={{ 
+                                background: '#d4edda',
+                                color: '#155724',
+                                padding: '3px 8px',
+                                borderRadius: '12px',
+                                fontSize: '10px',
+                                fontWeight: 'bold'
+                              }}>
+                                📝 Texto Disponible
+                              </span>
+                            )}
+                          </div>
                         </div>
                         
                         <div className="video-meta-row">
@@ -900,13 +1170,22 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
                         >
                           👁️ View
                         </button>
+                        {!video.hasTranscription && video.transcriptionStatus !== 'in_progress' && (
+                          <button 
+                            className="action-icon-large success"
+                            onClick={() => startTranscription(video.id, video.s3Key, video.language)}
+                            title="Start transcription"
+                          >
+                            🎤 Transcribir
+                          </button>
+                        )}
                         {video.transcriptionStatus === 'failed' && (
                           <button 
                             className="action-icon-large warning"
                             onClick={() => retryTranscription(video.id, video.s3Key, video.language)}
                             title="Retry transcription"
                           >
-                            🎤 Retry
+                            🔄 Retry
                           </button>
                         )}
                         <button 
@@ -1010,7 +1289,7 @@ const VideoManager: React.FC<VideoManagerProps> = ({ onBack, onViewVideo, onUplo
           ← Back to Home
         </button>
         <div className="storage-info">
-          <span>S3 + AWS Transcribe | Debug: {debugInfo.length} logs</span>
+          <span>S3 + AWS Transcribe | Debug: {debugInfo.length} logs | Polling: {pollingVideos.size} videos</span>
         </div>
       </div>
     </div>

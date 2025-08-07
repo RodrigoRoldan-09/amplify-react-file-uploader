@@ -1,9 +1,9 @@
-// components/VideoUploader.tsx - WITH AWS TRANSCRIBE INTEGRATION - CLEAN VERSION
+// components/VideoUploader.tsx - CON TRANSCRIPCIÓN AUTOMÁTICA INTEGRADA
 import React, { useState } from 'react';
 import { uploadData } from 'aws-amplify/storage';
 import { generateClient } from 'aws-amplify/data';
-import type { Schema } from '../amplify/data/resource';
-import TranscriptionService from '../services/transcriptionService';
+import type { Schema } from '../../amplify/data/resource';
+import TranscriptionService from '../../services/transcriptionService';
 
 const client = generateClient<Schema>();
 
@@ -22,7 +22,12 @@ const VideoUploader: React.FC<VideoUploadProps> = ({ onUploadComplete, onBack })
   const [uploadProgress, setUploadProgress] = useState(0);
   const [currentStep, setCurrentStep] = useState<string>('Ready to upload');
   const [error, setError] = useState<string | null>(null);
+  
+  // === NUEVOS ESTADOS PARA TRANSCRIPCIÓN ===
   const [enableTranscription, setEnableTranscription] = useState(true);
+  const [transcriptionProgress, setTranscriptionProgress] = useState(0);
+  const [transcriptionStatus, setTranscriptionStatus] = useState<'idle' | 'starting' | 'in_progress' | 'completed' | 'failed'>('idle');
+  const [transcriptionMessage, setTranscriptionMessage] = useState('');
 
   const languages = [
     { value: 'english', label: 'English' },
@@ -119,6 +124,100 @@ const VideoUploader: React.FC<VideoUploadProps> = ({ onUploadComplete, onBack })
     }
   };
 
+  // === FUNCIÓN PARA INICIAR TRANSCRIPCIÓN ===
+  const startTranscription = async (videoId: string, videoS3Key: string) => {
+    if (!enableTranscription) {
+      console.log('⏭️ Transcripción deshabilitada, saltando...');
+      return;
+    }
+
+    try {
+      setTranscriptionStatus('starting');
+      setTranscriptionMessage('Iniciando transcripción...');
+      setCurrentStep('Iniciando transcripción automática...');
+      
+      console.log('🎤 Iniciando transcripción para:', { videoId, videoS3Key, language });
+      
+      // Iniciar transcripción
+      const result = await TranscriptionService.startTranscription({
+        videoId: videoId,
+        videoS3Key: videoS3Key,
+        language: language,
+        enableSpeakerIdentification: false, // Por defecto deshabilitado
+        enableAutomaticPunctuation: true
+      });
+      
+      console.log('✅ Transcripción iniciada:', result);
+      
+      setTranscriptionStatus('in_progress');
+      setTranscriptionMessage(`Job iniciado: ${result.jobName}`);
+      setCurrentStep('Transcripción en progreso...');
+      
+      // Iniciar polling para monitorear progreso
+      startTranscriptionPolling(videoId);
+      
+    } catch (error) {
+      console.error('❌ Error iniciando transcripción:', error);
+      setTranscriptionStatus('failed');
+      setTranscriptionMessage('Error iniciando transcripción');
+      setError(`Error en transcripción: ${error instanceof Error ? error.message : 'Error desconocido'}`);
+    }
+  };
+
+  // === POLLING PARA MONITOREAR PROGRESO DE TRANSCRIPCIÓN ===
+  const startTranscriptionPolling = (videoId: string) => {
+    const pollInterval = setInterval(async () => {
+      try {
+        const progress = await TranscriptionService.checkProgress(videoId);
+        
+        console.log('📊 Progreso de transcripción:', progress);
+        
+        setTranscriptionProgress(progress.progress);
+        setTranscriptionMessage(progress.message);
+        
+        if (progress.status === 'completed') {
+          setTranscriptionStatus('completed');
+          setCurrentStep('¡Transcripción completada exitosamente!');
+          clearInterval(pollInterval);
+          
+          // Mostrar notificación de éxito
+          setTimeout(() => {
+            alert('¡Video subido y transcripción completada! 🎉');
+            onUploadComplete();
+          }, 1000);
+          
+        } else if (progress.status === 'failed') {
+          setTranscriptionStatus('failed');
+          setCurrentStep('Error en transcripción');
+          setError(`Transcripción falló: ${progress.error}`);
+          clearInterval(pollInterval);
+          
+          // Aún completar el upload aunque falle la transcripción
+          setTimeout(() => {
+            alert('Video subido exitosamente, pero la transcripción falló. Puedes reintentarla desde el administrador de videos.');
+            onUploadComplete();
+          }, 1000);
+        }
+        
+      } catch (error) {
+        console.error('❌ Error verificando progreso:', error);
+        clearInterval(pollInterval);
+        setTranscriptionStatus('failed');
+        setTranscriptionMessage('Error verificando progreso');
+      }
+    }, 5000); // Verificar cada 5 segundos
+
+    // Limpiar interval después de 10 minutos (máximo)
+    setTimeout(() => {
+      clearInterval(pollInterval);
+      if (transcriptionStatus === 'in_progress') {
+        setTranscriptionMessage('Transcripción tomó más tiempo del esperado');
+        setCurrentStep('Proceso completado (transcripción en segundo plano)');
+        setTimeout(() => onUploadComplete(), 2000);
+      }
+    }, 600000); // 10 minutos
+  };
+
   const handleUpload = async () => {
     if (!file || !title.trim()) {
       setError('Please select a file and enter a title');
@@ -128,6 +227,7 @@ const VideoUploader: React.FC<VideoUploadProps> = ({ onUploadComplete, onBack })
     setUploading(true);
     setUploadProgress(0);
     setError(null);
+    setTranscriptionStatus('idle');
 
     try {
       // Debug: Test DynamoDB connection first
@@ -190,8 +290,9 @@ const VideoUploader: React.FC<VideoUploadProps> = ({ onUploadComplete, onBack })
         duration: 0,
         uploadedAt: new Date().toISOString(),
         status: 'completed',
+        // Inicializar campos de transcripción
         transcriptionStatus: enableTranscription ? 'not_started' : 'not_started',
-        audioConversionStatus: enableTranscription ? 'not_started' : 'not_started'
+        audioExtractionStatus: 'not_started'
       });
 
       console.log('✅ Database record created:', videoRecord);
@@ -231,47 +332,28 @@ const VideoUploader: React.FC<VideoUploadProps> = ({ onUploadComplete, onBack })
         setCurrentStep('Starting transcription process...');
         console.log('🎤 Starting transcription process...');
         
-        try {
-          const jobName = await TranscriptionService.startTranscription({
-            videoId: videoId,
-            s3Key: s3Key,
-            language: language,
-            bucketName: 'file-uploader-demo-rodes-01'
-          });
-          
-          console.log('✅ Transcription job started:', jobName);
-          setCurrentStep('Transcription job started successfully!');
-          
-        } catch (transcriptionError) {
-          console.error('⚠️ Transcription failed to start:', transcriptionError);
-          setCurrentStep('Video uploaded, but transcription failed to start');
-          
-          await client.models.Video.update({
-            id: videoId,
-            transcriptionStatus: 'failed'
-          });
-        }
+        // Iniciar transcripción (no bloquear el flujo)
+        startTranscription(videoId, s3Key);
+        
       } else {
         setCurrentStep('Upload completed successfully!');
+        console.log('🎉 Upload process completed successfully!');
+        
+        // Reset form
+        setFile(null);
+        setTitle('');
+        setDescription('');
+        setLanguage('english');
+        setQuality('medium');
+        setUploadProgress(0);
+        setCurrentStep('Upload completed!');
+
+        // Show success message
+        setTimeout(() => {
+          alert('Video uploaded successfully!');
+          onUploadComplete();
+        }, 1000);
       }
-
-      // Success!
-      console.log('🎉 Upload process completed successfully!');
-      
-      // Reset form
-      setFile(null);
-      setTitle('');
-      setDescription('');
-      setLanguage('english');
-      setQuality('medium');
-      setUploadProgress(0);
-      setCurrentStep('Upload completed!');
-
-      // Show success message
-      setTimeout(() => {
-        alert(`Video uploaded successfully! ${enableTranscription ? 'Transcription is being processed in the background.' : ''}`);
-        onUploadComplete();
-      }, 1000);
 
     } catch (err) {
       console.error('❌ Upload failed:', err);
@@ -279,6 +361,20 @@ const VideoUploader: React.FC<VideoUploadProps> = ({ onUploadComplete, onBack })
       setCurrentStep('Upload failed');
     } finally {
       setUploading(false);
+    }
+  };
+
+  // === FUNCIÓN PARA CANCELAR TRANSCRIPCIÓN ===
+  const cancelTranscription = async () => {
+    if (transcriptionStatus === 'in_progress' && file) {
+      try {
+        // Aquí podrías cancelar la transcripción si tienes el videoId
+        setTranscriptionStatus('failed');
+        setTranscriptionMessage('Transcripción cancelada por el usuario');
+        setCurrentStep('Transcripción cancelada');
+      } catch (error) {
+        console.error('Error cancelando transcripción:', error);
+      }
     }
   };
 
@@ -442,13 +538,14 @@ const VideoUploader: React.FC<VideoUploadProps> = ({ onUploadComplete, onBack })
             </div>
           </div>
 
-          {/* Transcription Option */}
+          {/* === NUEVA SECCIÓN: TRANSCRIPCIÓN AUTOMÁTICA === */}
           <div style={{ 
             marginBottom: '25px', 
             padding: '20px', 
-            backgroundColor: '#e7f3ff', 
+            backgroundColor: enableTranscription ? '#e7f3ff' : '#f8f9fa', 
             borderRadius: '8px', 
-            border: '1px solid #b8daff' 
+            border: `1px solid ${enableTranscription ? '#b8daff' : '#e9ecef'}`,
+            transition: 'all 0.3s ease'
           }}>
             <div style={{ display: 'flex', alignItems: 'center', marginBottom: '10px' }}>
               <input
@@ -459,20 +556,20 @@ const VideoUploader: React.FC<VideoUploadProps> = ({ onUploadComplete, onBack })
                 disabled={uploading}
                 style={{ marginRight: '10px', transform: 'scale(1.2)' }}
               />
-              <label htmlFor="enableTranscription" style={{ fontWeight: 'bold', color: '#0056b3', fontSize: '16px' }}>
-                🎤 Enable Automatic Transcription
+              <label htmlFor="enableTranscription" style={{ fontWeight: 'bold', color: enableTranscription ? '#0056b3' : '#6c757d', fontSize: '16px' }}>
+                🎤 Habilitar Transcripción Automática
               </label>
             </div>
-            <p style={{ margin: 0, color: '#0056b3', fontSize: '14px', lineHeight: '1.4' }}>
-              Automatically generate text transcription from your video using AWS Transcribe. 
-              The transcription will be available in the selected language and can be downloaded later.
+            <p style={{ margin: 0, color: enableTranscription ? '#0056b3' : '#6c757d', fontSize: '14px', lineHeight: '1.4' }}>
+              Generar automáticamente texto transcrito desde tu video usando AWS Transcribe. 
+              La transcripción estará disponible en el idioma seleccionado y se puede descargar después.
             </p>
             {enableTranscription && (
               <div style={{ marginTop: '10px', padding: '10px', backgroundColor: 'white', borderRadius: '6px' }}>
                 <p style={{ margin: 0, fontSize: '13px', color: '#666' }}>
-                  <strong>Selected Language:</strong> {languages.find(l => l.value === language)?.label} 
+                  <strong>Idioma seleccionado:</strong> {languages.find(l => l.value === language)?.label} 
                   <br />
-                  <strong>AWS Transcribe Code:</strong> {TranscriptionService.getAWSLanguageCode(language)}
+                  <strong>Código AWS Transcribe:</strong> {TranscriptionService.getAWSLanguageCode(language)}
                 </p>
               </div>
             )}
@@ -488,10 +585,13 @@ const VideoUploader: React.FC<VideoUploadProps> = ({ onUploadComplete, onBack })
                 border: '1px solid #ffeaa7',
                 textAlign: 'center'
               }}>
-                <div style={{ fontSize: '24px', marginBottom: '10px' }}>⏳</div>
+                <div style={{ fontSize: '24px', marginBottom: '10px' }}>
+                  {transcriptionStatus === 'in_progress' ? '🎤' : '⏳'}
+                </div>
                 <h4 style={{ margin: '0 0 10px 0', color: '#856404' }}>Processing Upload...</h4>
                 <p style={{ margin: '0 0 15px 0', color: '#856404', fontWeight: 'bold' }}>{currentStep}</p>
                 
+                {/* Progreso de Upload */}
                 <div style={{ 
                   width: '100%', 
                   backgroundColor: '#f8f9fa', 
@@ -513,15 +613,50 @@ const VideoUploader: React.FC<VideoUploadProps> = ({ onUploadComplete, onBack })
                       fontWeight: 'bold'
                     }}
                   >
-                    {uploadProgress}%
+                    Upload: {uploadProgress}%
                   </div>
                 </div>
 
-                {enableTranscription && uploadProgress === 100 && (
+                {/* Progreso de Transcripción */}
+                {enableTranscription && transcriptionStatus !== 'idle' && (
                   <div style={{ marginTop: '15px' }}>
-                    <p style={{ margin: 0, fontSize: '14px', color: '#856404' }}>
-                      🎤 Transcription will start automatically after upload completes
+                    <p style={{ margin: '0 0 5px 0', fontSize: '14px', color: '#856404' }}>
+                      🎤 Transcripción: {transcriptionMessage}
                     </p>
+                    <div style={{ 
+                      width: '100%', 
+                      backgroundColor: '#f8f9fa', 
+                      borderRadius: '4px', 
+                      overflow: 'hidden'
+                    }}>
+                      <div 
+                        style={{ 
+                          width: `${transcriptionProgress}%`,
+                          height: '15px',
+                          backgroundColor: transcriptionStatus === 'completed' ? '#28a745' : 
+                                         transcriptionStatus === 'failed' ? '#dc3545' : '#ffc107',
+                          transition: 'width 0.3s ease'
+                        }}
+                      />
+                    </div>
+                    
+                    {transcriptionStatus === 'in_progress' && (
+                      <button 
+                        onClick={cancelTranscription}
+                        style={{
+                          marginTop: '10px',
+                          padding: '5px 10px',
+                          backgroundColor: '#dc3545',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '4px',
+                          fontSize: '12px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Cancelar Transcripción
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -612,12 +747,31 @@ const VideoUploader: React.FC<VideoUploadProps> = ({ onUploadComplete, onBack })
                 <li>Video metadata will be saved to DynamoDB</li>
                 {enableTranscription && (
                   <>
-                    <li>AWS Transcribe will process the audio automatically</li>
-                    <li>Transcription will be available in the video library</li>
+                    <li>🎤 AWS Transcribe will process the video automatically</li>
+                    <li>📝 Transcription will be available in the video library</li>
+                    <li>⏱️ Transcription progress monitored in real-time</li>
                   </>
                 )}
                 <li>You'll be redirected to the video library when complete</li>
               </ol>
+              
+              {enableTranscription && (
+                <div style={{ 
+                  marginTop: '15px', 
+                  padding: '10px', 
+                  backgroundColor: '#d1ecf1', 
+                  borderRadius: '6px',
+                  border: '1px solid #bee5eb'
+                }}>
+                  <p style={{ margin: 0, fontSize: '13px', color: '#0c5460' }}>
+                    <strong>🎤 Transcripción Automática Activada:</strong><br />
+                    • Idioma: {languages.find(l => l.value === language)?.label}<br />
+                    • AWS Transcribe procesará el video directamente<br />
+                    • Progreso monitoreado cada 5 segundos<br />
+                    • Puedes cancelar durante el proceso
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </div>
