@@ -4,7 +4,7 @@ backend:
     build:
       commands:
         - npm install
-        - npx @aws-amplify/backend-cli generate
+        - npx ampx generate
 frontend:
   phases:
     preBuild:
