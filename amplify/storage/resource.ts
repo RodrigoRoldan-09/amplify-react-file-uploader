@@ -1,4 +1,4 @@
-import { defineStorage } from "@aws-amplify/backend";
+/*import { defineStorage } from "@aws-amplify/backend";
 
 export const storage = defineStorage({
   name: "file-uploader-demo-rodes-01",
@@ -16,4 +16,4 @@ export const storage = defineStorage({
       allow.authenticated.to(["read", "delete"])
     ],
   }),
-});
+});*/
