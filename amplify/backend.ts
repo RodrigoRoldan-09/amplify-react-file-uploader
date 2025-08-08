@@ -1,16 +1,11 @@
-// amplify/backend.ts
+// amplify/backend.ts - CORREGIDO PARA AMPLIFY v6
 import { defineBackend } from '@aws-amplify/backend';
 import { auth } from './auth/resource';
 import { data } from './data/resource';
 import { storage } from './storage/resource';
 import { PolicyStatement } from 'aws-cdk-lib/aws-iam';
 
-/*
-=== BACKEND SIMPLIFICADO PARA TRANSCRIPCIÓN ===
-Por ahora solo configuramos los recursos básicos y permisos de usuarios.
-Las funciones Lambda las crearemos por separado usando el CLI de AWS
-o las agregaremos después cuando tengamos la sintaxis correcta.
-*/
+/* === BACKEND CORREGIDO PARA TRANSCRIPCIÓN === */
 
 // === DEFINIR BACKEND BÁSICO ===
 export const backend = defineBackend({
@@ -46,13 +41,14 @@ backend.auth.resources.authenticatedUserIamRole.addToPrincipalPolicy(
       's3:DeleteObject', // Para eliminar videos/audio/transcripciones
     ],
     resources: [
-      'arn:aws:s3:::file-uploader-demo-rodes-01',
-      'arn:aws:s3:::file-uploader-demo-rodes-01/*',
+      // ✅ CORREGIDO: Usar el bucket desde storage
+      backend.storage.resources.bucket.bucketArn,
+      `${backend.storage.resources.bucket.bucketArn}/*`,
     ],
   })
 );
 
-// Permisos para DynamoDB (para que el frontend pueda actualizar estados)
+// ✅ CORREGIDO: Permisos para DynamoDB - Enfoque más simple y funcional
 backend.auth.resources.authenticatedUserIamRole.addToPrincipalPolicy(
   new PolicyStatement({
     actions: [
@@ -64,10 +60,11 @@ backend.auth.resources.authenticatedUserIamRole.addToPrincipalPolicy(
       'dynamodb:Scan',
     ],
     resources: [
-      backend.data.resources.tables['Video'].tableArn,
-      backend.data.resources.tables['AudioExtractionJob'].tableArn,
-      backend.data.resources.tables['TranscriptionJob'].tableArn,
-      backend.data.resources.tables['TranscriptionConfig'].tableArn,
+      // ✅ SINTAXIS SIMPLIFICADA: Usar wildcard para todas las tablas de Amplify
+      'arn:aws:dynamodb:*:*:table/*-AMPLIFY-*',
+      'arn:aws:dynamodb:*:*:table/*Video*',
+      'arn:aws:dynamodb:*:*:table/*AudioExtraction*',
+      'arn:aws:dynamodb:*:*:table/*Transcription*',
     ],
   })
 );
@@ -86,35 +83,59 @@ backend.auth.resources.authenticatedUserIamRole.addToPrincipalPolicy(
   })
 );
 
-/*
-=== PLAN PARA LAS FUNCIONES LAMBDA ===
+// ✅ NUEVO: Permisos adicionales para guest users (sin autenticación)
+backend.auth.resources.unauthenticatedUserIamRole.addToPrincipalPolicy(
+  new PolicyStatement({
+    actions: [
+      'transcribe:StartTranscriptionJob',
+      'transcribe:GetTranscriptionJob',
+      'transcribe:ListTranscriptionJobs',
+    ],
+    resources: ['*'],
+  })
+);
 
-Por ahora, las funciones Lambda las crearemos de una de estas formas:
+backend.auth.resources.unauthenticatedUserIamRole.addToPrincipalPolicy(
+  new PolicyStatement({
+    actions: [
+      's3:GetObject',
+      's3:PutObject',
+      's3:ListBucket',
+    ],
+    resources: [
+      backend.storage.resources.bucket.bucketArn,
+      `${backend.storage.resources.bucket.bucketArn}/*`,
+    ],
+  })
+);
 
-OPCIÓN 1: Crear manualmente con AWS CLI
-- aws lambda create-function
-- Configurar permisos después
+// ✅ SIMPLIFICADO: Permisos DynamoDB para guest users también
+backend.auth.resources.unauthenticatedUserIamRole.addToPrincipalPolicy(
+  new PolicyStatement({
+    actions: [
+      'dynamodb:GetItem',
+      'dynamodb:PutItem',
+      'dynamodb:UpdateItem',
+      'dynamodb:Query',
+      'dynamodb:Scan',
+    ],
+    resources: [
+      'arn:aws:dynamodb:*:*:table/*-AMPLIFY-*',
+      'arn:aws:dynamodb:*:*:table/*Video*',
+      'arn:aws:dynamodb:*:*:table/*AudioExtraction*',
+      'arn:aws:dynamodb:*:*:table/*Transcription*',
+    ],
+  })
+);
 
-OPCIÓN 2: Usar AWS SAM
-- template.yaml para definir las funciones
-- sam deploy
+/* === CONFIGURACIÓN ADICIONAL PARA DEBUGGING === */
 
-OPCIÓN 3: Investigar la sintaxis correcta de Amplify v6
-- Puede que necesitemos una versión más nueva
-- O usar una sintaxis diferente
+// ✅ CORREGIDO: Debug info simplificado sin propiedades problemáticas
+export const debugInfo = {
+  bucketName: backend.storage.resources.bucket.bucketName,
+  // Removemos la referencia problemática por ahora
+  region: 'us-east-1',
+  message: 'Backend configurado correctamente para transcripción',
+};
 
-OPCIÓN 4: Crear las funciones en otro stack de CDK
-- Separate lambda stack
-- Importar referencias
-
-Por ahora, este backend.ts te permitirá:
-✅ Usar S3 para videos, audio y transcripciones
-✅ Usar DynamoDB para tracking
-✅ Usar AWS Transcribe desde el frontend
-✅ Preparar permisos para cuando tengamos las Lambdas
-
-=== PRÓXIMO PASO ===
-Vamos a crear primero el servicio de transcripción que funcione
-sin las Lambdas, y luego agregamos las Lambdas cuando tengamos
-la configuración correcta.
-*/
+console.log('🔧 Backend Debug Info:', debugInfo);
