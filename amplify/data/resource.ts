@@ -8,9 +8,14 @@ const schema = a.schema({
       description: a.string(),
       s3Key: a.string().required(),
       language: a.string().required(),
+      quality: a.string(),
       status: a.string(),
       transcriptionStatus: a.string(),
       transcriptionJobName: a.string(),
+      transcriptionJobId: a.string(),
+      transcriptionStartedAt: a.datetime(),
+      transcriptionCompletedAt: a.datetime(),
+      transcriptionError: a.string(),
       uploadedAt: a.datetime(),
     })
     .authorization((allow) => [
@@ -22,6 +27,9 @@ const schema = a.schema({
       jobId: a.string().required(),
       videoId: a.string().required(),
       status: a.string(),
+      transcribeJobName: a.string(),
+      submittedToTranscribeAt: a.datetime(),
+      completedAt: a.datetime(),
     })
     .authorization((allow) => [
       allow.publicApiKey().to(["create", "read", "update", "delete"]),
